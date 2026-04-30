@@ -135,3 +135,11 @@ Polyglot itself is MIT. Outputs from FLUX.1-dev and FLUX.1 Kontext are non-comme
 ## SRS
 
 This codebase implements the v1.0 SRS (April 30, 2026). The SRS is the contract — when something differs from the spec, that's a deliberate update; please flag it in a PR rather than silently working around it.
+
+---
+
+## Security
+
+- Never commit `*-firebase-adminsdk-*.json` (already in `.gitignore`).
+- The repo currently contains `nims-ai-f07c8-firebase-adminsdk-fbsvc-7c0b8d556f.json` at the project root — **delete it from disk** once env vars (`FIREBASE_ADMIN_*`) are set in `.env.local`. Gitignored ≠ safe (cloud sync, screen-share, file-picker can leak it).
+- App Check debug must be `false` in production (`NEXT_PUBLIC_APPCHECK_DEBUG=false`).

@@ -1,7 +1,6 @@
 "use client";
 
-import { uploadBytesResumable, ref as storageRef } from "firebase/storage";
-import { getClientStorage, getClientAuth } from "@/lib/firebase/client";
+import { getClientAuth } from "@/lib/firebase/client";
 import type { AttachmentRef } from "@/lib/types";
 import { authedFetch } from "@/components/auth-provider";
 
@@ -63,11 +62,6 @@ export async function uploadAttachment(opts: UploadOpts): Promise<AttachmentRef>
     size: file.size,
     ...(extraText ? ({ pdfText: extraText } as object) : {}),
   } as AttachmentRef;
-}
-
-export function _ensureFirebaseStorageRef() {
-  // Re-export for tests; kept for parity with admin paths.
-  return { storage: getClientStorage(), ref: storageRef, uploadBytesResumable };
 }
 
 async function extractPdfText(file: File): Promise<string> {

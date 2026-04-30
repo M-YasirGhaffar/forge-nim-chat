@@ -12,6 +12,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ chatId: str
     const user = await requireUser(req);
     const { chatId } = await ctx.params;
     const chat = await getChat(chatId);
+    // Task 60: return 404 for both "no such chat" AND "chat exists but isn't yours".
+    // We intentionally avoid 403 here — leaking existence to non-owners is a small but
+    // real info-disclosure vector, and the chat page calls notFound() on a 404.
     if (!chat || chat.ownerId !== user.uid) {
       return Response.json({ error: "not_found" }, { status: 404 });
     }

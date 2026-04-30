@@ -75,6 +75,8 @@ export function ArtifactPanel({ artifact, isStreaming, onClose }: Props) {
   const isPreviewable = artifact.type !== "code";
 
   return (
+    // TODO(task46): make this header sticky on scroll within the panel + add a "copy trace" affordance.
+    // TODO(task77): for image artifacts, add download + copy URL actions in the header.
     <div className="h-full w-full flex flex-col bg-[rgb(var(--color-bg))]">
       <div className="border-b px-3 py-2 flex items-center gap-2">
         <FileCode2 className="h-4 w-4 text-[rgb(var(--color-fg-muted))]" />

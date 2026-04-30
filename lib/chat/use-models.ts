@@ -29,7 +29,12 @@ interface State {
 
 let cached: ApiResponse | null = null;
 let cachedAt = 0;
-const CACHE_MS = 60_000;
+// Task 17: matched to server-side health TTL (30 minutes). Refreshing more often than
+// this just burns NIM trial RPM on probes the cache hasn't refilled.
+const CACHE_MS = 30 * 60 * 1000;
+// Module-level marker so the slow `?health=1` call only fires once per session window.
+let lastHealthAt = 0;
+const HEALTH_GAP_MS = 30 * 60 * 1000;
 
 export function useAvailableModels() {
   const [state, setState] = useState<State>({
@@ -73,7 +78,14 @@ export function useAvailableModels() {
           usingFallback: !!fastData.usingFallback,
         });
 
-        // Second call with health probes (slow, runs in background and updates).
+        // Task 17: only fire the slow health-probing call once per session window.
+        // Skip if we did one within the last HEALTH_GAP_MS — the server already caches
+        // health entries for 30 minutes, so any further probes here would just spend
+        // RPM for no fresh data.
+        const now = Date.now();
+        if (!force && lastHealthAt && now - lastHealthAt < HEALTH_GAP_MS) return;
+        lastHealthAt = now;
+
         const slow = await authedFetch("/api/models?health=1");
         if (!slow.ok) return;
         const slowData = (await slow.json()) as ApiResponse;

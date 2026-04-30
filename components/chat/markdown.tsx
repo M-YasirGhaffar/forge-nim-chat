@@ -3,7 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,36 @@ interface MarkdownProps {
   // Optional render function for [[artifact:id]] placeholders.
   renderArtifactRef?: (id: string) => React.ReactNode;
 }
+
+// Heavy parser — wrap the inner ReactMarkdown render so identical text segments
+// don't re-tokenize on every parent re-render during streaming.
+const MarkdownSegment = memo(function MarkdownSegment({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+      components={{
+        pre({ children, ...rest }) {
+          return <CodeBlock {...rest}>{children}</CodeBlock>;
+        },
+        a({ href, children, ...rest }) {
+          return (
+            <a href={href} target="_blank" rel="noreferrer noopener" {...rest}>
+              {children}
+            </a>
+          );
+        },
+        img({ alt, src, ...rest }) {
+          if (!src || typeof src !== "string") return null;
+          // eslint-disable-next-line @next/next/no-img-element
+          return <img alt={alt} src={src} {...rest} className="rounded-lg max-h-[480px] my-2" />;
+        },
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+});
 
 export function Markdown({ content, className, renderArtifactRef }: MarkdownProps) {
   // Split the content on [[artifact:id]] tokens so artifact cards render inline.
@@ -30,32 +60,7 @@ export function Markdown({ content, className, renderArtifactRef }: MarkdownProp
             </div>
           );
         }
-        return (
-          <ReactMarkdown
-            key={`m-${i}`}
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-            components={{
-              pre({ children, ...rest }) {
-                return <CodeBlock {...rest}>{children}</CodeBlock>;
-              },
-              a({ href, children, ...rest }) {
-                return (
-                  <a href={href} target="_blank" rel="noreferrer noopener" {...rest}>
-                    {children}
-                  </a>
-                );
-              },
-              img({ alt, src, ...rest }) {
-                if (!src || typeof src !== "string") return null;
-                // eslint-disable-next-line @next/next/no-img-element
-                return <img alt={alt} src={src} {...rest} className="rounded-lg max-h-[480px] my-2" />;
-              },
-            }}
-          >
-            {seg.text}
-          </ReactMarkdown>
-        );
+        return <MarkdownSegment key={`m-${i}`} text={seg.text} />;
       })}
     </div>
   );
@@ -98,7 +103,10 @@ function CodeBlock(props: React.HTMLAttributes<HTMLElement> & { children?: React
       <button
         type="button"
         onClick={copy}
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity btn btn-secondary h-7 px-2 text-[11px]"
+        // Task 48: keep the copy button reachable on touch devices where there is
+        // no hover. We default to a low opacity that becomes full on hover/focus
+        // (pointer:fine media query targets desktop only).
+        className="absolute top-2 right-2 opacity-50 [@media(pointer:fine)]:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity btn btn-secondary h-7 px-2 text-[11px]"
       >
         {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         {copied ? "Copied" : "Copy"}

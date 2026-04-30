@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import { toast } from "sonner";
 import { parseEventStream, type StreamEvent, type StreamStatus } from "@/lib/stream/protocol";
+import { getClientAuth } from "@/lib/firebase/client";
 import type {
   ArtifactRecord,
   AttachmentRef,
@@ -119,56 +120,105 @@ export function useChatStream(opts: UseChatStreamOpts) {
         }),
       }));
 
-      let response: Response;
-      try {
-        response = await fetch("/api/chat", {
+      const requestBody = JSON.stringify({
+        chatId,
+        modelId: args.modelId,
+        thinkingMode: args.thinkingMode,
+        messages: payloadMessages,
+      });
+
+      // Task 16: if our cached idToken has rotated server-side, the API will return 401.
+      // Force-refresh via Firebase auth and retry the streaming POST exactly once.
+      const doFetch = async (token: string): Promise<Response> =>
+        fetch("/api/chat", {
           method: "POST",
           signal: ac.signal,
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${args.idToken}`,
+            Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({
-            chatId,
-            modelId: args.modelId,
-            thinkingMode: args.thinkingMode,
-            messages: payloadMessages,
-          }),
+          body: requestBody,
         });
+
+      let response: Response;
+      let retried = false;
+      try {
+        response = await doFetch(args.idToken);
+        if (response.status === 401 && !retried) {
+          retried = true;
+          const fresh = await getClientAuth().currentUser?.getIdToken(true).catch(() => null);
+          if (fresh) {
+            response = await doFetch(fresh);
+          }
+        }
       } catch (e) {
+        // Task 33: ensure we always clear streaming state when the fetch itself fails
+        // before we ever read a byte. The previous code did this only on AbortError.
         if ((e as Error).name === "AbortError") {
           setIsStreaming(false);
           setStreamingMessageId(null);
+          setStreamStatus({ status: null });
+          setMessages((prev) => prev.filter((m) => m.id !== idRef.current));
           return;
         }
         toast.error(`Network error: ${(e as Error).message}`);
         setIsStreaming(false);
         setStreamingMessageId(null);
+        setStreamStatus({ status: null });
         setMessages((prev) => prev.filter((m) => m.id !== idRef.current && m.id !== userMessage.id));
         return;
       }
 
       if (!response.ok || !response.body) {
         const text = await response.text().catch(() => "");
+        let userFriendly = "";
+        let isRateLimit = false;
         try {
           const json = JSON.parse(text);
           if (json.error === "rate_limited") {
-            toast.error(`Rate limit hit (${json.scope}). Try again in ~${json.retryAfter}s.`);
+            isRateLimit = true;
+            userFriendly = `Rate limited (${json.scope}). Try again in ${json.retryAfter}s.`;
+            toast.error(userFriendly, { duration: 6000 });
           } else if (json.error === "unauthenticated") {
-            toast.error("Sign-in expired. Please refresh the page.");
+            userFriendly = "Sign-in expired. Please refresh the page.";
+            toast.error(userFriendly);
           } else {
-            toast.error(json.message || json.error || "Request failed.");
+            userFriendly = json.message || json.error || "Request failed.";
+            toast.error(userFriendly);
           }
         } catch {
-          toast.error(`Server error (${response.status}): ${text.slice(0, 200)}`);
+          userFriendly = `Server error (${response.status}): ${text.slice(0, 200)}`;
+          toast.error(userFriendly);
         }
         setIsStreaming(false);
         setStreamingMessageId(null);
-        setMessages((prev) => prev.filter((m) => m.id !== idRef.current));
+        setStreamStatus({ status: null });
+        if (isRateLimit) {
+          // Don't pollute the chat with an error bubble for a transient rate-limit;
+          // the toast already conveys it and the user message is preserved.
+          setMessages((prev) => prev.filter((m) => m.id !== idRef.current));
+        } else {
+          // Replace the placeholder with a proper failed-turn so the user gets a Retry
+          // affordance via MessageView's InterruptedNotice + the failure context inline.
+          const failureText = `_⚠️ ${userFriendly || "The request failed."}_`;
+          setMessages((prev) => {
+            const out = [...prev];
+            const i = out.findIndex((m) => m.id === idRef.current);
+            if (i !== -1) {
+              out[i] = {
+                ...out[i],
+                parts: [{ type: "text", text: failureText }],
+                finishReason: "error",
+              };
+            }
+            return out;
+          });
+        }
         return;
       }
 
       const reasoningStartByMessage = new Map<string, number>();
+      let networkLost = false;
       try {
         for await (const ev of parseEventStream(response.body)) {
           handleEvent(ev, {
@@ -185,13 +235,25 @@ export function useChatStream(opts: UseChatStreamOpts) {
           });
         }
       } catch (e) {
-        if ((e as Error).name !== "AbortError") {
-          toast.error(`Stream error: ${(e as Error).message}`);
+        const err = e as Error;
+        if (err.name === "AbortError") {
+          // Intentional cancel — UI state is reset in finally.
+        } else if (err.name === "TypeError" || err.name === "NetworkError") {
+          // Task 56: surface a "Connection lost — reconnecting..." status so the chat
+          // shell can display a banner. We don't actually reconnect here; that's owned
+          // by the chat-shell layer (Agent E). We just emit the status and skip the
+          // generic error toast so the banner is the canonical signal.
+          networkLost = true;
+          setStreamStatus({ status: "retry", message: "Connection lost — reconnecting…" });
+        } else {
+          toast.error(`Stream error: ${err.message}`);
         }
       } finally {
         setIsStreaming(false);
         setStreamingMessageId(null);
-        setStreamStatus({ status: null });
+        // Task 56: keep the "retry" status visible after the loop tears down so the
+        // banner doesn't immediately disappear. Otherwise reset to clear.
+        if (!networkLost) setStreamStatus({ status: null });
       }
     },
     [chatId, isStreaming, messages, setMessages]
@@ -208,6 +270,21 @@ export function useChatStream(opts: UseChatStreamOpts) {
     setArtifactsState((m) => updater(new Map(m)));
   }, []);
 
+  // Hard reset for "new chat" — aborts any in-flight stream, clears chat-level state.
+  const resetAll = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsStreaming(false);
+    setStreamingMessageId(null);
+    setStreamStatus({ status: null });
+    setContextUsage(null);
+    setRecentlyOpenedArtifact(null);
+    setArtifactsState(new Map());
+    setMessagesState([]);
+    setTitle("New chat");
+    setChatId(null);
+  }, []);
+
   return {
     chatId,
     messages,
@@ -220,6 +297,7 @@ export function useChatStream(opts: UseChatStreamOpts) {
     recentlyOpenedArtifact,
     send,
     abort,
+    resetAll,
     setMessages,
     setArtifacts,
     setChatId,

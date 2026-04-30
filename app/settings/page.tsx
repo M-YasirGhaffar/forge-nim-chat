@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/firebase/session";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { SettingsForm } from "./settings-form";
@@ -10,6 +11,10 @@ export const metadata = { title: "Settings — Polyglot" };
 
 export default async function SettingsPage() {
   const user = await getSessionUser().catch(() => null);
+  // Server-side gate — redirect before rendering anything so unauthenticated users
+  // never see a flash of the settings UI. The SettingsClientGate below stays as a
+  // belt-and-braces fallback in case Admin SDK isn't configured (getSessionUser → null).
+  if (!user) redirect("/login?next=/settings");
 
   let prefs: { lastModel?: string; thinkingDefault?: string; theme?: string } = {};
   const stats = { totalMessages: 0, totalTokens: 0 };

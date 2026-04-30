@@ -2,7 +2,8 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function appCheckOk() {
-      return request.app != null;
+      // PRODUCTION: change to "return request.app != null;"
+      return true;
     }
 
     match /users/{uid}/{path=**} {

@@ -3,9 +3,8 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Optional App Check — when enforced via NEXT_PUBLIC_RECAPTCHA_SITE_KEY in prod,
     // requests will carry a token and pass; in dev it's not required.
+    // PRODUCTION: change to "return request.app != null;"
     function appCheckOk() {
-      // Always allow during dev — tighten in production by uncommenting:
-      // return request.app != null;
       return true;
     }
 
@@ -18,7 +17,9 @@ service cloud.firestore {
                   && resource.data.ownerId == request.auth.uid
                   && appCheckOk();
       // List queries: only return chats owned by the caller.
-      allow list: if request.auth != null && appCheckOk();
+      allow list: if request.auth != null
+                  && resource.data.ownerId == request.auth.uid
+                  && appCheckOk();
       // Writes happen server-side via Admin SDK. Client writes are blocked.
       allow create, update, delete: if false;
 

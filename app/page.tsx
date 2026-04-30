@@ -1,22 +1,25 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { ArrowRight, Sparkles, Zap, Box, Eye, Shield, Github } from "lucide-react";
-import { MODEL_REGISTRY } from "@/lib/models/registry";
+import { listAvailableEntries } from "@/lib/models/discovery";
 import { getSessionUser } from "@/lib/firebase/session";
+import type { ModelEntry } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function LandingPage() {
-  // Auth-aware: signed-in users go straight to /chat from the landing page.
-  const user = await getSessionUser().catch(() => null);
-  if (user) redirect("/chat");
-
-  return <LandingShell />;
+  // Fetch live models from NIM (cached); fall back to allowlist if unreachable.
+  // Show every entry — even non-commercial-licensed ones (FLUX.1 Dev, Kontext) are free
+  // on the NIM trial. The license is surfaced inline on each card.
+  const [user, modelData] = await Promise.all([
+    getSessionUser().catch(() => null),
+    listAvailableEntries().catch(() => ({ entries: [] as ModelEntry[], usingFallback: true })),
+  ]);
+  return <LandingShell entries={modelData.entries} signedIn={!!user} />;
 }
 
-function LandingShell() {
-  const llmCount = MODEL_REGISTRY.filter((m) => m.category !== "image").length;
-  const imgCount = MODEL_REGISTRY.filter((m) => m.category === "image").length;
+function LandingShell({ entries, signedIn }: { entries: ModelEntry[]; signedIn: boolean }) {
+  const llmCount = entries.filter((m) => m.category !== "image").length;
+  const imgCount = entries.filter((m) => m.category === "image").length;
 
   return (
     <main className="min-h-screen flex flex-col">
@@ -28,8 +31,14 @@ function LandingShell() {
           </Link>
           <nav className="flex items-center gap-2">
             <Link href="/about" className="btn btn-ghost">About</Link>
-            <Link href="/login" className="btn btn-secondary">Sign in</Link>
-            <Link href="/login" className="btn btn-primary">Try free</Link>
+            {signedIn ? (
+              <Link href="/chat" className="btn btn-primary">Open chat <ArrowRight className="h-4 w-4" /></Link>
+            ) : (
+              <>
+                <Link href="/login" className="btn btn-secondary">Sign in</Link>
+                <Link href="/login" className="btn btn-primary">Try free</Link>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -50,13 +59,12 @@ function LandingShell() {
             </span>
           </h1>
           <p className="mt-6 text-lg max-w-2xl" style={{ color: "rgb(var(--color-fg-muted))" }}>
-            Switch between DeepSeek V4, Kimi K2 Thinking, Qwen 3.5 397B, GLM 5.1, and FLUX
-            without leaving the conversation. Streaming reasoning traces, multimodal input,
-            and live artifacts side-by-side with chat.
+            Frontier reasoning, multimodal vision, and image generation in a single chat. Streaming
+            reasoning traces, live artifacts, and per-model controls — all on the NVIDIA NIM trial.
           </p>
           <div className="mt-10 flex flex-wrap items-center gap-3">
-            <Link href="/login" className="btn btn-primary h-11 px-5 text-[0.95rem]">
-              Start chatting <ArrowRight className="h-4 w-4" />
+            <Link href={signedIn ? "/chat" : "/login"} className="btn btn-primary h-11 px-5 text-[0.95rem]">
+              {signedIn ? "Open chat" : "Start chatting"} <ArrowRight className="h-4 w-4" />
             </Link>
             <Link href="/about" className="btn btn-secondary h-11 px-5 text-[0.95rem]">How it works</Link>
           </div>
@@ -76,7 +84,7 @@ function LandingShell() {
             Each model has different strengths — pick the right one without juggling tabs and API keys.
           </p>
           <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {MODEL_REGISTRY.map((m) => (
+            {entries.map((m) => (
               <div key={m.id} className="card p-5 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <div className="font-medium">{m.displayName}</div>
@@ -110,7 +118,7 @@ function LandingShell() {
           <Feature
             icon={<Eye className="h-5 w-5" />}
             title="Multimodal input"
-            body="Drag in images, PDFs, or video. Qwen 3.5 and Kimi K2.5 see them natively."
+            body="Drag in images, PDFs, or video. Multimodal models see them natively."
           />
         </div>
       </section>

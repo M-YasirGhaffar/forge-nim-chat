@@ -244,6 +244,28 @@
   @keyframes blink {
     50% { visibility: hidden; }
   }
+
+  /*
+   * Streaming-text cursor. Targets the trailing block of a streaming markdown render so
+   * the cursor sits inline at the end of the text — and keeps blinking even when tokens
+   * stall briefly (the animation is owned by CSS, not by the streaming character itself).
+   */
+  .streaming-md > p:last-child::after,
+  .streaming-md > h1:last-child::after,
+  .streaming-md > h2:last-child::after,
+  .streaming-md > h3:last-child::after,
+  .streaming-md > h4:last-child::after,
+  .streaming-md > h5:last-child::after,
+  .streaming-md > h6:last-child::after,
+  .streaming-md > ul:last-child > li:last-child::after,
+  .streaming-md > ol:last-child > li:last-child::after,
+  .streaming-md > blockquote:last-child p:last-child::after {
+    content: "▍";
+    color: rgb(var(--color-fg-muted));
+    margin-inline-start: 2px;
+    display: inline-block;
+    animation: blink 1.05s steps(2, start) infinite;
+  }
 }
 
 .scroll-fade-bottom {

@@ -122,9 +122,21 @@ async function handleChat(req: NextRequest) {
       chatId = null;
     }
   }
+  // Resolve the user message text up front so we can use it for the initial chat title.
+  const lastIncoming = body.messages[body.messages.length - 1];
+  const userPromptText = lastIncoming.parts
+    .map((p) => (p.type === "text" ? (p.text || "") : ""))
+    .join(" ")
+    .trim();
+  const initialTitle = userPromptText
+    ? userPromptText.replace(/\s+/g, " ").slice(0, 60)
+    : "New chat";
   if (!chatId) {
     try {
-      chatId = await createChat(user.uid, model.id);
+      // Persist the chat row with the user prompt as the title — the sidebar shows
+      // something readable immediately instead of a generic "New chat" placeholder.
+      // The LLM-generated title (3–6 words) overwrites this in the background.
+      chatId = await createChat(user.uid, model.id, initialTitle);
     } catch (e) {
       console.warn("[/api/chat] createChat failed, using ephemeral id:", (e as Error).message);
       chatId = nanoid(12);
@@ -173,6 +185,14 @@ async function handleChat(req: NextRequest) {
     nimMessages.push({ role: m.role as "user" | "assistant" | "system", content });
   }
 
+  // Task 18: defensive cap to prevent runaway prompt growth from PDF/text dumps that bypass
+  // client-side dedupe. Hard ceiling of 200KB per message before we sanitize/trim.
+  for (const m of nimMessages) {
+    if (typeof m.content === "string" && m.content.length > 200_000) {
+      m.content = m.content.slice(0, 200_000) + "\n[...truncated...]";
+    }
+  }
+
   const sanitized = sanitizeMessagesForModel(nimMessages, model);
   const trimmed = trimToContext(sanitized.messages, model);
 
@@ -212,7 +232,17 @@ async function handleChat(req: NextRequest) {
   const encoder = encodeEvent;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (e: StreamEvent) => controller.enqueue(encoder(e));
+      // Task 6/66: track closure so any late callback (e.g. fire-and-forget title gen)
+      // doesn't enqueue into a closed controller and crash the request.
+      let closed = false;
+      const send = (e: StreamEvent) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder(e));
+        } catch {
+          // Controller may have been torn down by a client disconnect — swallow.
+        }
+      };
       const startTime = Date.now();
 
       send({
@@ -285,6 +315,9 @@ async function handleChat(req: NextRequest) {
         }
 
         const events = mergeStream(parseNimSSE(upstream.body!));
+        // When the user disabled thinking, drop reasoning deltas at the boundary so even
+        // misbehaving NIM endpoints can't leak a chain-of-thought into the UI.
+        const stripReasoning = (body.thinkingMode ?? null) === "off";
         for await (const ev of events) {
           if (!firstByteSeen) {
             firstByteSeen = true;
@@ -292,6 +325,7 @@ async function handleChat(req: NextRequest) {
             send({ type: "status", status: "streaming", modelId, elapsedMs: Date.now() - reqStart });
           }
           if (ev.type === "reasoning" && ev.text) {
+            if (stripReasoning) continue;
             if (reasoningStart === null) reasoningStart = Date.now();
             reasoningText += ev.text;
             send({ type: "reasoning-delta", text: ev.text });
@@ -367,14 +401,39 @@ async function handleChat(req: NextRequest) {
       }
 
       const thinkingDuration = reasoningStart ? Date.now() - reasoningStart : undefined;
+
+      // Task 72: defensively seal any artifacts whose `artifact-close` was never emitted
+      // (e.g. truncated streams or parser bailing on malformed output) so the UI doesn't
+      // get stuck on a perpetual "Generating artifact..." spinner.
+      for (const id of artifactBuffers.keys()) {
+        send({ type: "artifact-close", id });
+      }
+
+      // Task 59: `finishReason` defaults to "stop" but is overwritten from upstream NIM
+      // events above (including "length" when output is cut by max_tokens). The client's
+      // Continue button keys off `finishReason === "length"` from the finish event.
       send({ type: "finish", finishReason, thinkingDurationMs: thinkingDuration });
       void streamErrored;
 
-      // Auto-generate a title on first turn (cheap async call after streaming).
-      let newTitle: string | undefined;
-      if (isFirstTurn && assistantText.length > 0) {
-        newTitle = await generateTitle(last, assistantText).catch(() => undefined);
-        if (newTitle) send({ type: "title", title: newTitle });
+      // Background title generation. The chat row already has the user prompt as a
+      // readable initial title (set during createChat above) — this call replaces it
+      // with a 3–6 word LLM-generated title. Fire-and-forget so the stream closes
+      // immediately. The Firestore listener on the client picks up the new title via
+      // the live `useChats` subscription, and we also send a title event for the
+      // header to update without a refresh.
+      if (isFirstTurn && userPromptText) {
+        void generateTitle(last, assistantText)
+          .then(async (t) => {
+            if (!t || t === initialTitle) return;
+            if (!closed) send({ type: "title", title: t });
+            try {
+              const { getAdminDb } = await import("@/lib/firebase/admin");
+              await getAdminDb().collection("chats").doc(chatId!).update({ title: t });
+            } catch {
+              // Persistence is best-effort.
+            }
+          })
+          .catch(() => undefined);
       }
 
       // Persist assistant message + artifacts.
@@ -412,7 +471,10 @@ async function handleChat(req: NextRequest) {
           })),
           modelId: model.id,
           isFirstTurn,
-          newTitle,
+          // Task 6/66: title is now applied asynchronously by the fire-and-forget
+          // generateTitle() block above. Leave undefined here so the chat row keeps
+          // the placeholder title until the async update lands.
+          newTitle: undefined,
         });
       } catch (e) {
         send({ type: "error", message: `Failed to save: ${e instanceof Error ? e.message : String(e)}` });
@@ -420,6 +482,7 @@ async function handleChat(req: NextRequest) {
 
       // Suppress unused-var warning for unused timing
       void startTime;
+      closed = true;
       controller.close();
     },
   });
@@ -452,13 +515,16 @@ function friendlyError(e: NimError): string {
 }
 
 async function generateTitle(lastUserMessage: { parts: Array<{ type: string; text?: string }> }, assistantText: string): Promise<string> {
-  // Cheap, non-thinking call to V4 Flash for a 4–8 word title.
+  // Cheap, non-thinking call to V4 Flash for a 4–6 word title. Works even when the
+  // assistant text is empty (e.g. stream errored) — falls back to the user prompt.
   const userText = lastUserMessage.parts
     .map((p) => (p.type === "text" ? p.text : ""))
     .filter(Boolean)
     .join(" ")
     .slice(0, 600);
+  if (!userText.trim()) return "New chat";
   const summary = assistantText.slice(0, 300);
+  const promptBody = summary ? `User: ${userText}\nAssistant: ${summary}` : `User: ${userText}`;
 
   try {
     const { nimChatCompletions } = await import("@/lib/nim/client");
@@ -468,15 +534,20 @@ async function generateTitle(lastUserMessage: { parts: Array<{ type: string; tex
         {
           role: "system",
           content:
-            "Generate a concise 3–6 word title for the following conversation. Use Title Case. Reply with the title only — no quotes, no punctuation at the end.",
+            "Write a concise 3–6 word title that describes this chat. Use Title Case. Reply with the title only — no quotes, no leading/trailing punctuation, no emojis.",
         },
-        { role: "user", content: `User: ${userText}\nAssistant: ${summary}` },
+        { role: "user", content: promptBody },
       ],
       temperature: 0.4,
       max_tokens: 32,
       reasoning_effort: "low",
+      chat_template_kwargs: { thinking: false, enable_thinking: false },
     });
-    return resp.content.replace(/^["'\s]+|["'\s]+$/g, "").slice(0, 80) || "New chat";
+    const cleaned = resp.content
+      .replace(/^["'\s]+|["'\s]+$/g, "")
+      .replace(/^title:\s*/i, "")
+      .slice(0, 80);
+    return cleaned || userText.slice(0, 60) || "New chat";
   } catch {
     return userText.slice(0, 60) || "New chat";
   }

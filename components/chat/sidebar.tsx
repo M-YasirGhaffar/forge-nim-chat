@@ -8,9 +8,7 @@ import {
   Trash2,
   MessageSquare,
   PanelLeftClose,
-  Settings,
   Loader2,
-  LogOut,
   Search,
   Pencil,
   AlertCircle,
@@ -22,6 +20,7 @@ import type { ChatMeta } from "@/lib/types";
 import { chatGroup, cn } from "@/lib/utils";
 import { getModel } from "@/lib/models/registry";
 import { toast } from "sonner";
+import { ProfilePopover } from "./profile-popover";
 
 interface Props {
   activeChatId: string | null;
@@ -34,6 +33,7 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
   const { chats, error } = useChats(user?.uid);
   const [search, setSearch] = useState("");
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     if (!chats) return null;
@@ -52,11 +52,18 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
   }, [filtered]);
   const groupOrder = ["Today", "Yesterday", "Last 7 days", "Last 30 days", "Older"];
 
-  async function deleteChat(id: string) {
-    if (!confirm("Delete this chat? This cannot be undone.")) return;
+  async function deleteChatConfirmed(id: string) {
+    setConfirmingDelete(null);
     const res = await authedFetch(`/api/chats/${id}`, { method: "DELETE" });
     if (res.ok) {
-      if (activeChatId === id) router.push("/chat");
+      if (activeChatId === id) {
+        // Active chat just got deleted — navigate to /chat AND fire reset so the shell
+        // aborts any in-flight stream and clears messages/context-meter immediately.
+        // Without this, the user sees a "stop generating" button on a chat that no
+        // longer exists.
+        router.push("/chat");
+        window.dispatchEvent(new Event("polyglot:reset-chat"));
+      }
       toast.success("Chat deleted.");
     } else {
       toast.error("Could not delete chat.");
@@ -81,6 +88,31 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
     return () => window.removeEventListener("polyglot:refresh-chats", noop);
   }, []);
 
+  // Task 15: New chat without hard reload. Dispatches a reset event so chat-shell
+  // can clear in-place instead of remounting the route.
+  function handleNewChat() {
+    const path = window.location.pathname;
+    if (path === "/chat") {
+      // Same route — just clear in-place.
+      window.dispatchEvent(new Event("polyglot:reset-chat"));
+    } else {
+      // Navigate to /chat. The new shell will mount fresh.
+      router.push("/chat");
+      // Also fire reset in case a shell is already mounted (e.g. via parallel routes).
+      window.dispatchEvent(new Event("polyglot:reset-chat"));
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await signOut();
+      toast.success("Signed out.");
+      router.push("/");
+    } catch {
+      toast.error("Could not sign out.");
+    }
+  }
+
   return (
     <aside className="h-full w-[260px] shrink-0 border-r flex flex-col bg-[rgb(var(--color-bg-elev))]">
       <div className="px-3 py-2.5 border-b flex items-center gap-2">
@@ -100,18 +132,7 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
 
       <div className="px-2 pt-2">
         <button
-          onClick={() => {
-            // Hard nav, not router.push: the URL is updated mid-stream via
-            // history.replaceState (to avoid remounting the streaming fetch), which
-            // leaves Next's internal pathname stuck at "/chat". A router.push("/chat")
-            // from there is a no-op. window.location.assign always navigates.
-            if (window.location.pathname === "/chat") {
-              // Already on the new-chat shell — clear state by reloading.
-              window.location.reload();
-            } else {
-              window.location.assign("/chat");
-            }
-          }}
+          onClick={handleNewChat}
           className="btn btn-secondary w-full justify-start"
         >
           <Plus className="h-4 w-4" />
@@ -212,10 +233,13 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
                       chat={c}
                       active={c.id === activeChatId}
                       isRenaming={renameTarget === c.id}
+                      isConfirmingDelete={confirmingDelete === c.id}
                       onStartRename={() => setRenameTarget(c.id)}
                       onCancelRename={() => setRenameTarget(null)}
                       onCommitRename={(name) => void renameChat(c.id, name)}
-                      onDelete={() => void deleteChat(c.id)}
+                      onRequestDelete={() => setConfirmingDelete(c.id)}
+                      onCancelDelete={() => setConfirmingDelete(null)}
+                      onConfirmDelete={() => void deleteChatConfirmed(c.id)}
                     />
                   ))}
                 </ul>
@@ -224,29 +248,13 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
           )}
       </div>
 
-      <div className="border-t p-2 flex items-center gap-2">
-        {user?.photoURL ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={user.photoURL} alt="" className="h-7 w-7 rounded-full border" />
-        ) : (
-          <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[rgb(var(--color-accent))] to-[rgb(var(--color-accent)/0.5)] grid place-items-center text-[11px] font-semibold border text-white">
-            {(user?.displayName || user?.email || "?")[0].toUpperCase()}
-          </div>
+      <div className="border-t p-2">
+        {user && (
+          <ProfilePopover
+            user={user}
+            onSignOut={() => void handleSignOut()}
+          />
         )}
-        <div className="flex-1 min-w-0">
-          <div className="text-[12px] truncate font-medium">{user?.displayName || user?.email}</div>
-          <div className="text-[10px] truncate" style={{ color: "rgb(var(--color-fg-subtle))" }}>{user?.email}</div>
-        </div>
-        <Link href="/settings" className="btn btn-ghost h-7 w-7 p-0" title="Settings">
-          <Settings className="h-3.5 w-3.5" />
-        </Link>
-        <button
-          onClick={() => void signOut().then(() => router.push("/"))}
-          className="btn btn-ghost h-7 w-7 p-0"
-          title="Sign out"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-        </button>
       </div>
     </aside>
   );
@@ -256,18 +264,24 @@ function ChatRow({
   chat,
   active,
   isRenaming,
+  isConfirmingDelete,
   onStartRename,
   onCancelRename,
   onCommitRename,
-  onDelete,
+  onRequestDelete,
+  onCancelDelete,
+  onConfirmDelete,
 }: {
   chat: ChatMeta;
   active: boolean;
   isRenaming: boolean;
+  isConfirmingDelete: boolean;
   onStartRename: () => void;
   onCancelRename: () => void;
   onCommitRename: (name: string) => void;
-  onDelete: () => void;
+  onRequestDelete: () => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(chat.title);
@@ -282,6 +296,19 @@ function ChatRow({
       });
     }
   }, [isRenaming, chat.title]);
+
+  // Task 35: when this row is in delete-confirm mode, dismiss on click-outside.
+  useEffect(() => {
+    if (!isConfirmingDelete) return;
+    function onDoc(e: PointerEvent) {
+      const target = e.target as HTMLElement;
+      // Keep open if user clicks inside the confirm popover (data-attribute used as a marker).
+      if (target.closest("[data-delete-confirm]")) return;
+      onCancelDelete();
+    }
+    document.addEventListener("pointerdown", onDoc);
+    return () => document.removeEventListener("pointerdown", onDoc);
+  }, [isConfirmingDelete, onCancelDelete]);
 
   if (isRenaming) {
     return (
@@ -314,9 +341,10 @@ function ChatRow({
   }
 
   return (
-    <li className="group/item">
+    <li className="group/item relative">
       <Link
         href={`/chat/${chat.id}`}
+        prefetch
         className={cn(
           "flex items-center gap-2 px-2.5 mx-1 rounded-md text-[13px] h-9 transition-colors",
           active
@@ -342,7 +370,7 @@ function ChatRow({
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              onDelete();
+              onRequestDelete();
             }}
             className="p-1 rounded hover:bg-[rgb(var(--color-danger)/0.15)] hover:text-[rgb(var(--color-danger))]"
             title="Delete"
@@ -351,6 +379,46 @@ function ChatRow({
           </button>
         </span>
       </Link>
+
+      {isConfirmingDelete && (
+        <div
+          data-delete-confirm
+          role="dialog"
+          aria-label="Confirm delete"
+          className="absolute right-1 top-full z-30 mt-1 w-56 rounded-lg border bg-[rgb(var(--color-bg-elev))] shadow-2xl p-2.5"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-[12px] mb-1.5 leading-snug" style={{ color: "rgb(var(--color-fg))" }}>
+            Delete <span className="font-medium">{chat.title || "this chat"}</span>?
+          </div>
+          <div className="text-[10.5px] mb-2" style={{ color: "rgb(var(--color-fg-subtle))" }}>
+            This cannot be undone.
+          </div>
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCancelDelete();
+              }}
+              className="btn btn-ghost h-6 px-2 text-[11px]"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onConfirmDelete();
+              }}
+              className="btn btn-primary h-6 px-2 text-[11px]"
+              style={{ backgroundColor: "rgb(var(--color-danger))", color: "white" }}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
     </li>
   );
 }

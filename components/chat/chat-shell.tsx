@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { PanelLeft, PanelRight, Pencil, Code, Brain, Image as ImageIcon, X, FlaskConical, Lock } from "lucide-react";
+import { nanoid } from "nanoid";
+import { PanelLeft, PanelRight, Pencil, Code, Brain, Image as ImageIcon, X, FlaskConical, Lock, ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth, authedFetch } from "@/components/auth-provider";
 import { ChatSidebar } from "./sidebar";
@@ -11,6 +12,7 @@ import { Composer } from "./composer";
 import { MessageView } from "./message";
 import { SwitchModelDialog } from "./switch-model-dialog";
 import { StreamStatusPill } from "./stream-status";
+import { OfflineBanner } from "./offline-banner";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
 import { uploadAttachment } from "@/lib/chat/attachments";
 import { getModel, DEFAULT_MODEL_ID } from "@/lib/models/registry";
@@ -38,6 +40,14 @@ interface Props {
   initialThinking?: ThinkingMode;
 }
 
+// AttachmentRef plus the optional fields we attach client-side.
+type ExtendedAttachment = AttachmentRef & {
+  pdfText?: string;
+  // Marks a chip that hasn't been uploaded yet — its `storagePath` is "pending:..."
+  // and the `downloadUrl` is a blob: URL we own and must revoke.
+  isPending?: boolean;
+};
+
 export function ChatShell({
   chatId: initialChatId,
   initialMessages,
@@ -51,8 +61,39 @@ export function ChatShell({
 
   const [modelId, setModelId] = useState(initialModelId || DEFAULT_MODEL_ID);
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(initialThinking || "high");
-  const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<ExtendedAttachment[]>([]);
+  // pendingFiles is keyed by storagePath of the matching pending chip so removals stay in sync.
+  const [pendingFiles, setPendingFiles] = useState<Array<{ key: string; file: File }>>([]);
+  // Stable client-generated id for attachment uploads when there's no chat yet.
+  // Reset whenever a new chat starts so the next chat's storage paths are isolated.
+  const pendingChatIdRef = useRef<string>(nanoid(12));
+
+  // Task 19: every blob URL we create lives here so we can revoke deterministically.
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+  const trackObjectUrl = useCallback((url: string) => {
+    objectUrlsRef.current.add(url);
+  }, []);
+  const revokeObjectUrl = useCallback((url: string | undefined) => {
+    if (!url || !url.startsWith("blob:")) return;
+    if (objectUrlsRef.current.has(url)) {
+      URL.revokeObjectURL(url);
+      objectUrlsRef.current.delete(url);
+    }
+  }, []);
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount.
+      for (const url of objectUrlsRef.current) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+      objectUrlsRef.current.clear();
+    };
+  }, []);
+
   const [showSidebar, setShowSidebar] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     return window.matchMedia("(min-width: 768px)").matches;
@@ -84,20 +125,22 @@ export function ChatShell({
   // Switch-model dialog state.
   const [pendingSwitch, setPendingSwitch] = useState<string | null>(null);
 
-  // On a fresh /chat mount, honor a "carry" hint left by SwitchModelDialog.
+  // On a fresh /chat mount, honor a "carry" hint left by SwitchModelDialog (start a new
+  // chat with the same first prompt as the previous one but a different model).
   useEffect(() => {
     if (initialChatId) return;
     try {
-      const raw = window.localStorage.getItem("polyglot:newChatCarry");
-      if (!raw) return;
-      window.localStorage.removeItem("polyglot:newChatCarry");
-      const carry = JSON.parse(raw) as { modelId?: string; seedText?: string };
-      if (carry.modelId) setModelId(carry.modelId);
-      if (carry.seedText) {
-        // Push to composer via the same custom-event the suggestion cards use.
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("polyglot:fill-composer", { detail: carry.seedText }));
-        }, 80);
+      const carryRaw = window.localStorage.getItem("polyglot:newChatCarry");
+      if (carryRaw) {
+        window.localStorage.removeItem("polyglot:newChatCarry");
+        const carry = JSON.parse(carryRaw) as { modelId?: string; seedText?: string };
+        if (carry.modelId) setModelId(carry.modelId);
+        if (carry.seedText) {
+          // Push to composer via the same custom-event the suggestion cards use.
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("polyglot:fill-composer", { detail: carry.seedText }));
+          }, 80);
+        }
       }
     } catch {
       // ignore
@@ -120,6 +163,12 @@ export function ChatShell({
     }
     setModelId(newId);
   }
+
+  // Task 28: the composer "switch" affordance opens a picker so the user can choose any
+  // model rather than us guessing the alternative.
+  const handleRequestSwitch = useCallback(() => {
+    setPendingSwitch("__pick__");
+  }, []);
 
   // Regenerate: resend the most recent user message + drop the current assistant turn.
   async function handleRegenerate() {
@@ -145,6 +194,47 @@ export function ChatShell({
     await stream.send({
       text: lastUserText,
       attachments: lastUserAttachments,
+      modelId,
+      thinkingMode,
+      idToken,
+    });
+  }
+
+  // Task 42: edit a user message and resend from that point.
+  async function handleEditUserMessage(messageId: string, newText: string) {
+    if (!idToken || stream.isStreaming) return;
+    const idx = stream.messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    const targetUser = stream.messages[idx];
+    if (targetUser.role !== "user") return;
+    const preservedAttachments = targetUser.parts
+      .filter((p) => p.type !== "text")
+      .map((p) => ({
+        storagePath: p.storagePath ?? "",
+        downloadUrl: p.downloadUrl ?? "",
+        mimeType: p.mimeType ?? "",
+        fileName: p.fileName ?? "",
+        type: p.type === "image" ? ("image" as const) : ("pdf" as const),
+        size: 0,
+      }));
+    // Truncate everything from idx onward — the server will re-persist the new user
+    // message via its normal flow when we call stream.send().
+    stream.setMessages((prev) => prev.slice(0, idx));
+    await stream.send({
+      text: newText,
+      attachments: preservedAttachments,
+      modelId,
+      thinkingMode,
+      idToken,
+    });
+  }
+
+  // Task 59: resume a length-truncated assistant message.
+  async function handleContinue() {
+    if (!idToken || stream.isStreaming) return;
+    await stream.send({
+      text: "Continue from where you left off — pick up exactly where you stopped.",
+      attachments: [],
       modelId,
       thinkingMode,
       idToken,
@@ -197,21 +287,64 @@ export function ChatShell({
   // Drop attachments incompatible with the new model.
   useEffect(() => {
     const m = getModel(modelId)!;
-    setAttachments((prev) =>
-      prev.filter((a) => {
-        if (a.type === "image") return m.supportsImages || m.category === "image";
-        if (a.type === "video") return m.supportsVideo;
-        return true;
-      })
-    );
+    setAttachments((prev) => {
+      const dropped: ExtendedAttachment[] = [];
+      const kept = prev.filter((a) => {
+        let ok = true;
+        if (a.type === "image") ok = m.supportsImages || m.category === "image";
+        else if (a.type === "video") ok = m.supportsVideo;
+        if (!ok) dropped.push(a);
+        return ok;
+      });
+      // Revoke any blob URLs we created for the dropped previews.
+      for (const a of dropped) revokeObjectUrl(a.downloadUrl);
+      return kept;
+    });
     setPendingFiles((prev) =>
-      prev.filter((f) => {
-        if (f.type.startsWith("image/")) return m.supportsImages || m.category === "image";
-        if (f.type.startsWith("video/")) return m.supportsVideo;
+      prev.filter(({ file }) => {
+        if (file.type.startsWith("image/")) return m.supportsImages || m.category === "image";
+        if (file.type.startsWith("video/")) return m.supportsVideo;
         return true;
       })
     );
-  }, [modelId]);
+  }, [modelId, revokeObjectUrl]);
+
+  // Respond to "new chat" reset events from the sidebar without remounting. This MUST
+  // abort any in-flight stream — otherwise switching to a fresh chat while a model is
+  // still responding leaves the Stop button on the new (empty) composer.
+  useEffect(() => {
+    function onReset() {
+      // Revoke any pending blob URLs.
+      for (const a of attachments) revokeObjectUrl(a.downloadUrl);
+      revokeObjectUrl(referenceImageUrl);
+      objectUrlsRef.current.forEach((url) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      });
+      objectUrlsRef.current.clear();
+
+      pendingChatIdRef.current = nanoid(12);
+      setAttachments([]);
+      setPendingFiles([]);
+      setReferenceImagePath(undefined);
+      setReferenceImageUrl(undefined);
+      setShowArtifactPanel(false);
+      setActiveArtifactId(null);
+      // resetAll() aborts the in-flight fetch, clears messages/artifacts/streaming flags
+      // AND the context-usage meter so the new chat starts truly fresh.
+      stream.resetAll();
+      // Replace URL so the address bar reflects the cleared state.
+      if (window.location.pathname !== "/chat") {
+        window.history.replaceState({}, "", "/chat");
+      }
+    }
+    window.addEventListener("polyglot:reset-chat", onReset);
+    return () => window.removeEventListener("polyglot:reset-chat", onReset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachments, referenceImageUrl, revokeObjectUrl]);
 
   // Keyboard shortcuts.
   useEffect(() => {
@@ -222,8 +355,13 @@ export function ChatShell({
         setShowSidebar((s) => !s);
       } else if (meta && e.shiftKey && (e.key === "o" || e.key === "O")) {
         e.preventDefault();
-        if (window.location.pathname === "/chat") window.location.reload();
-        else window.location.assign("/chat");
+        // Soft reset — same as sidebar New chat.
+        if (window.location.pathname === "/chat") {
+          window.dispatchEvent(new Event("polyglot:reset-chat"));
+        } else {
+          router.push("/chat");
+          window.dispatchEvent(new Event("polyglot:reset-chat"));
+        }
       } else if (e.key === "Escape" && showArtifactPanel) {
         setShowArtifactPanel(false);
       }
@@ -235,66 +373,124 @@ export function ChatShell({
   const model = getModel(modelId)!;
   const isImageMode = model.category === "image";
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  // Task 21+29: track whether the user has scrolled away from the bottom.
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
 
+  function handleScroll() {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    setUserScrolledUp(distance > 80);
+  }
+
+  // Streaming auto-scroll: instant during stream, smooth at end. Only follows when the
+  // user hasn't scrolled away.
   useEffect(() => {
-    if (stream.isStreaming) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [stream.messages, stream.isStreaming]);
+    if (userScrolledUp) return;
+    if (stream.isStreaming) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [stream.messages, stream.isStreaming, userScrolledUp]);
+
+  function jumpToLatest() {
+    setUserScrolledUp(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
 
   const isEmpty = stream.messages.length === 0;
 
-  // Defer attachment uploads until we have a real chatId. P1-6 from audit.
+  // When there's no chat yet, files still upload right away — we route them under a
+  // client-generated chat id (pendingChatIdRef). The server's signed-URL endpoint
+  // accepts any chatId; the real chat doc id is assigned during /api/chat and the
+  // storage path is captured verbatim in Firestore.
   async function handleAddAttachments(files: File[]) {
-    if (!stream.chatId) {
-      // Stash files; they'll upload right before send.
-      if (isImageMode) {
-        // Reference image preview.
-        const f = files[0];
-        if (model.id !== "black-forest-labs/flux.1-kontext-dev") {
-          toast.error(`${model.displayName} doesn't accept reference images. Use FLUX.1 Kontext.`);
-          return;
-        }
-        const preview = URL.createObjectURL(f);
-        setReferenceImageUrl(preview);
-        setPendingFiles([f]);
+    const targetChatId = stream.chatId || pendingChatIdRef.current;
+
+    if (isImageMode) {
+      // Reference image upload (single).
+      const f = files[0];
+      if (!f) return;
+      if (model.id !== "black-forest-labs/flux.1-kontext-dev") {
+        toast.error(`${model.displayName} doesn't accept reference images. Use FLUX.1 Kontext.`);
         return;
       }
-      setPendingFiles((prev) => [...prev, ...files]);
-      // Show preview chips immediately (we don't have storagePath yet — use a synthetic key).
-      const previews: AttachmentRef[] = files.map((f, i) => ({
-        storagePath: `pending:${Date.now()}-${i}-${f.name}`,
-        downloadUrl: URL.createObjectURL(f),
+      // Show a local preview immediately for snappy feedback.
+      const preview = URL.createObjectURL(f);
+      trackObjectUrl(preview);
+      revokeObjectUrl(referenceImageUrl);
+      setReferenceImageUrl(preview);
+      try {
+        const a = await uploadAttachment({ chatId: targetChatId, file: f });
+        setReferenceImagePath(a.storagePath);
+        // Keep the local preview as URL — it's faster than the signed URL during composition.
+      } catch (e) {
+        toast.error(`Upload failed: ${(e as Error).message}`);
+        revokeObjectUrl(preview);
+        setReferenceImageUrl(undefined);
+      }
+      return;
+    }
+
+    // Standard text-mode attachments. Optimistically render preview chips while the upload runs.
+    const previews: ExtendedAttachment[] = files.map((f, i) => {
+      const blobUrl = URL.createObjectURL(f);
+      trackObjectUrl(blobUrl);
+      const pendingKey = `pending:${Date.now()}-${i}-${f.name}`;
+      return {
+        storagePath: pendingKey,
+        downloadUrl: blobUrl,
         mimeType: f.type,
         fileName: f.name,
         type: f.type.startsWith("image/") ? "image" : f.type.startsWith("video/") ? "video" : "pdf",
         size: f.size,
-      }));
-      setAttachments((prev) => [...prev, ...previews]);
-      return;
-    }
+        isPending: true,
+      };
+    });
+    setAttachments((prev) => [...prev, ...previews]);
 
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const preview = previews[i];
       try {
-        if (isImageMode) {
-          if (model.id !== "black-forest-labs/flux.1-kontext-dev") {
-            toast.error(`${model.displayName} doesn't accept reference images. Use FLUX.1 Kontext.`);
-            return;
-          }
-          const a = await uploadAttachment({ chatId: stream.chatId, file });
-          setReferenceImagePath(a.storagePath);
-          setReferenceImageUrl(a.downloadUrl);
-        } else {
-          const a = await uploadAttachment({ chatId: stream.chatId, file });
-          setAttachments((prev) => [...prev, a]);
-        }
+        const a = await uploadAttachment({ chatId: targetChatId, file });
+        // Replace the pending chip with the uploaded ref. Carry the local blob URL forward
+        // until the message is sent so previews stay snappy; the server-side ref has the
+        // real storagePath.
+        setAttachments((prev) =>
+          prev.map((p) =>
+            p.storagePath === preview.storagePath
+              ? {
+                  ...a,
+                  downloadUrl: a.downloadUrl, // keep authoritative for sending; UI blob already revoked below
+                  isPending: false,
+                  ...(a as { pdfText?: string }).pdfText
+                    ? { pdfText: (a as unknown as { pdfText: string }).pdfText }
+                    : {},
+                }
+              : p
+          )
+        );
+        // The blob URL is no longer needed — the chip will use the signed URL.
+        revokeObjectUrl(preview.downloadUrl);
       } catch (e) {
         toast.error(`Upload failed: ${(e as Error).message}`);
+        // Drop the failed chip and revoke its preview.
+        setAttachments((prev) => prev.filter((p) => p.storagePath !== preview.storagePath));
+        revokeObjectUrl(preview.downloadUrl);
       }
     }
   }
 
   function handleRemoveAttachment(storagePath: string) {
-    setAttachments((prev) => prev.filter((a) => a.storagePath !== storagePath));
-    setPendingFiles((prev) => prev.filter((f) => !storagePath.includes(f.name)));
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.storagePath === storagePath);
+      if (target) revokeObjectUrl(target.downloadUrl);
+      return prev.filter((a) => a.storagePath !== storagePath);
+    });
+    setPendingFiles((prev) => prev.filter((p) => p.key !== storagePath));
   }
 
   async function handleSubmit(text: string) {
@@ -307,16 +503,14 @@ export function ChatShell({
       return;
     }
 
-    // If we have pending files but no chatId yet, we can't upload them — they'll be lost.
-    // Show a warning and bail. (The proper fix would be: create chat first, then upload.
-    // For now, we just block if there are pending files and no chatId.)
-    if (pendingFiles.length > 0 && !stream.chatId) {
-      // Trade-off: wait for the chat to be created server-side, then upload, then attach.
-      // For now we keep it simple: send without the pending files (user already sees a warning).
-      toast.info("Attachments will upload after the chat is created. Sending text first.");
-      // Drop the pending preview chips so they don't look like part of this message.
-      setAttachments((prev) => prev.filter((a) => !a.storagePath.startsWith("pending:")));
-      setPendingFiles([]);
+    // Wait for any still-pending uploads to settle before we send. We don't have a
+    // promise here — but uploads have already started in handleAddAttachments. If
+    // there are pending chips remaining, surface a quick toast and bail; the user
+    // can resubmit once uploads complete.
+    const stillPending = attachments.filter((a) => a.isPending);
+    if (stillPending.length > 0) {
+      toast.info("Uploading attachments… please wait a moment.");
+      return;
     }
 
     const pdfs = attachments.filter(
@@ -330,6 +524,8 @@ export function ChatShell({
       (a) => !(a.type === "pdf") && !a.storagePath.startsWith("pending:")
     );
     await stream.send({ text: composed, attachments: sendable, modelId, thinkingMode, idToken });
+    // Revoke any remaining blob URLs and clear pending state.
+    for (const a of attachments) revokeObjectUrl(a.downloadUrl);
     setAttachments([]);
     setPendingFiles([]);
   }
@@ -339,17 +535,7 @@ export function ChatShell({
       toast.error("Sign in expired. Please refresh.");
       return;
     }
-    // If a reference is pending (no chatId yet) we'll need to upload after the chat is created.
-    let referencePath = referenceImagePath;
-    if (!referencePath && pendingFiles.length > 0 && stream.chatId) {
-      try {
-        const a = await uploadAttachment({ chatId: stream.chatId, file: pendingFiles[0] });
-        referencePath = a.storagePath;
-      } catch (e) {
-        toast.error(`Upload failed: ${(e as Error).message}`);
-        return;
-      }
-    }
+    const referencePath = referenceImagePath;
     const optimisticUserMessage: ChatMessage = {
       id: `tmp-${Date.now()}`,
       role: "user",
@@ -421,6 +607,8 @@ export function ChatShell({
               : m
         )
       );
+      // Cleanup reference + previews — revoke any blob URLs we still own.
+      revokeObjectUrl(referenceImageUrl);
       setReferenceImagePath(undefined);
       setReferenceImageUrl(undefined);
       setPendingFiles([]);
@@ -446,6 +634,44 @@ export function ChatShell({
   const isStreamingActive =
     stream.isStreaming && lastAssistant && stream.streamingMessageId === lastAssistant.id;
 
+  // Hoist the Composer into a single closure so empty + filled states share props.
+  const composerNode = (
+    <Composer
+      chatId={stream.chatId}
+      modelId={modelId}
+      setModelId={handleModelChange}
+      modelLocked={modelLocked}
+      thinkingMode={thinkingMode}
+      setThinkingMode={setThinkingMode}
+      isStreaming={stream.isStreaming}
+      contextUsed={totalUsed}
+      attachments={attachments}
+      onAddAttachments={handleAddAttachments}
+      onRemoveAttachment={handleRemoveAttachment}
+      onSubmit={handleSubmit}
+      onAbort={stream.abort}
+      autoFocus={isEmpty}
+      onRequestSwitch={handleRequestSwitch}
+      imageMode={
+        isImageMode
+          ? {
+              referenceStoragePath: referenceImagePath || (referenceImageUrl ? "preview" : undefined),
+              onClearReference: () => {
+                revokeObjectUrl(referenceImageUrl);
+                setReferenceImagePath(undefined);
+                setReferenceImageUrl(undefined);
+                setPendingFiles([]);
+              },
+              aspectRatio,
+              setAspectRatio,
+              steps,
+              setSteps,
+            }
+          : undefined
+      }
+    />
+  );
+
   return (
     <div className="h-screen flex bg-[rgb(var(--color-bg))] overflow-hidden">
       {showSidebar && (
@@ -470,8 +696,10 @@ export function ChatShell({
 
       <div className="flex-1 flex min-w-0">
         <main className="flex-1 flex flex-col min-w-0 relative">
+          <OfflineBanner />
+
           {/* Slim top bar — only shows when sidebar is collapsed or there's an artifact panel toggle */}
-          <header className="h-12 flex items-center px-3 gap-2">
+          <header className="h-12 shrink-0 flex items-center px-3 gap-2">
             {!showSidebar && (
               <button
                 onClick={() => setShowSidebar(true)}
@@ -481,6 +709,25 @@ export function ChatShell({
                 <PanelLeft className="h-4 w-4" />
               </button>
             )}
+
+            {/* Task 57: per-chat model badge once a conversation has started. */}
+            {!isEmpty && model && (
+              <div className="inline-flex items-center gap-1.5 rounded-full border bg-[rgb(var(--color-bg-elev))] px-2.5 py-1 text-[11.5px]" style={{ color: "rgb(var(--color-fg-muted))" }}>
+                <span
+                  className="block h-1.5 w-1.5 rounded-full"
+                  style={{ backgroundColor: "rgb(var(--color-accent))" }}
+                  aria-hidden="true"
+                />
+                <span className="font-medium" style={{ color: "rgb(var(--color-fg))" }}>{model.displayName}</span>
+                {modelLocked && (
+                  <span className="inline-flex items-center gap-0.5 ml-0.5 text-[10px]" title="Model is locked for this chat">
+                    <Lock className="h-2.5 w-2.5" />
+                    locked
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="flex-1" />
             {stream.artifacts.size > 0 && (
               <button
@@ -502,47 +749,21 @@ export function ChatShell({
               user={user}
               modelDisplay={model.displayName}
               category={model.category}
-              composer={
-                <Composer
-                  modelId={modelId}
-                  setModelId={handleModelChange}
-                  modelLocked={modelLocked}
-                  thinkingMode={thinkingMode}
-                  setThinkingMode={setThinkingMode}
-                  isStreaming={stream.isStreaming}
-                  contextUsed={totalUsed}
-                  attachments={attachments}
-                  onAddAttachments={handleAddAttachments}
-                  onRemoveAttachment={handleRemoveAttachment}
-                  onSubmit={handleSubmit}
-                  onAbort={stream.abort}
-                  autoFocus
-                  imageMode={
-                    isImageMode
-                      ? {
-                          referenceStoragePath: referenceImagePath || (referenceImageUrl ? "preview" : undefined),
-                          onClearReference: () => {
-                            setReferenceImagePath(undefined);
-                            setReferenceImageUrl(undefined);
-                            setPendingFiles([]);
-                          },
-                          aspectRatio,
-                          setAspectRatio,
-                          steps,
-                          setSteps,
-                        }
-                      : undefined
-                  }
-                />
-              }
+              composer={composerNode}
             />
           ) : (
             <>
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                <div className="mx-auto max-w-3xl w-full px-4 pt-4 pb-32 space-y-7">
+              {/* Task 31: flex-column layout, composer is shrink-0 sibling not absolute. */}
+              <div
+                ref={messagesScrollRef}
+                onScroll={handleScroll}
+                className="flex-1 min-h-0 overflow-y-auto"
+              >
+                <div className="mx-auto max-w-3xl w-full px-4 pt-4 pb-4 space-y-7">
                   {stream.messages.map((m) => (
                     <div key={m.id}>
                       <MessageView
+                        chatId={stream.chatId}
                         message={m}
                         artifacts={stream.artifacts}
                         isStreaming={stream.isStreaming && stream.streamingMessageId === m.id}
@@ -554,6 +775,16 @@ export function ChatShell({
                         onRegenerate={
                           m.role === "assistant" && !stream.isStreaming
                             ? handleRegenerate
+                            : undefined
+                        }
+                        onContinue={
+                          m.role === "assistant" && !stream.isStreaming
+                            ? handleContinue
+                            : undefined
+                        }
+                        onEditUserMessage={
+                          m.role === "user" && !stream.isStreaming
+                            ? (newText) => void handleEditUserMessage(m.id, newText)
                             : undefined
                         }
                       />
@@ -574,41 +805,22 @@ export function ChatShell({
                 </div>
               </div>
 
-              <div className="absolute bottom-0 inset-x-0 pointer-events-none">
-                <div className="h-12 bg-gradient-to-t from-[rgb(var(--color-bg))] to-transparent" />
-                <div className="bg-[rgb(var(--color-bg))] pointer-events-auto">
-                  <Composer
-                    modelId={modelId}
-                    setModelId={handleModelChange}
-                  modelLocked={modelLocked}
-                    thinkingMode={thinkingMode}
-                    setThinkingMode={setThinkingMode}
-                    isStreaming={stream.isStreaming}
-                    contextUsed={totalUsed}
-                    attachments={attachments}
-                    onAddAttachments={handleAddAttachments}
-                    onRemoveAttachment={handleRemoveAttachment}
-                    onSubmit={handleSubmit}
-                    onAbort={stream.abort}
-                    imageMode={
-                      isImageMode
-                        ? {
-                            referenceStoragePath: referenceImagePath || (referenceImageUrl ? "preview" : undefined),
-                            onClearReference: () => {
-                              setReferenceImagePath(undefined);
-                              setReferenceImageUrl(undefined);
-                              setPendingFiles([]);
-                            },
-                            aspectRatio,
-                            setAspectRatio,
-                            steps,
-                            setSteps,
-                          }
-                        : undefined
-                    }
-                  />
+              {/* Jump-to-latest pill, only when user has scrolled away during streaming. */}
+              {userScrolledUp && (
+                <div className="absolute bottom-32 inset-x-0 grid place-items-center pointer-events-none">
+                  <button
+                    onClick={jumpToLatest}
+                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border bg-[rgb(var(--color-bg-elev))] shadow-md px-3 py-1.5 text-[12px] hover:shadow-lg transition-shadow"
+                    style={{ color: "rgb(var(--color-fg-muted))" }}
+                  >
+                    <ArrowDown className="h-3.5 w-3.5" />
+                    Jump to latest
+                  </button>
                 </div>
-              </div>
+              )}
+
+              {/* Composer is a shrink-0 sibling — no more absolute/gradient. */}
+              <div className="shrink-0 bg-[rgb(var(--color-bg))]">{composerNode}</div>
             </>
           )}
 
@@ -622,6 +834,7 @@ export function ChatShell({
                   <button
                     className="opacity-60 hover:opacity-100"
                     onClick={() => {
+                      revokeObjectUrl(referenceImageUrl);
                       setReferenceImagePath(undefined);
                       setReferenceImageUrl(undefined);
                       setPendingFiles([]);
@@ -692,6 +905,7 @@ function EmptyView({
 }) {
   const greeting = useMemo(() => greet(user), [user]);
 
+  // TODO(task38): randomize suggestion order on mount once the static list grows.
   const suggestions = useMemo(() => {
     if (category === "image") {
       return [

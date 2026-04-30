@@ -23,7 +23,10 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.warn("[session] ensureUser skipped:", (e as Error).message);
     }
-    const cookieResult = await setSessionCookie(idToken);
+    // Rolling 7-day session: every POST re-issues the cookie with a fresh 7-day window.
+    // The auth-provider re-POSTs here on its 50-minute token refresh, so an active user's
+    // session never expires unless they're idle for 7 days.
+    const cookieResult = await setSessionCookie(idToken, { rolling: true });
     return Response.json({
       ok: true,
       uid: verified.uid,

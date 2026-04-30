@@ -6,12 +6,19 @@ import { formatTokens } from "@/lib/utils";
 interface Props {
   modelId: string;
   used: number;
+  /**
+   * Optional live delta (rough token estimate of in-flight stream output) added on top of
+   * the committed `used` count so the meter ticks during a stream. Pass undefined when not
+   * streaming.
+   */
+  liveDelta?: number;
 }
 
-export function ContextMeter({ modelId, used }: Props) {
+export function ContextMeter({ modelId, used, liveDelta }: Props) {
   const m = getModel(modelId);
   if (!m || m.contextWindow === 0) return null;
-  const pct = Math.min(100, (used / m.contextWindow) * 100);
+  const totalUsed = used + (liveDelta ?? 0);
+  const pct = Math.min(100, (totalUsed / m.contextWindow) * 100);
   const danger = pct > 85;
   const warn = pct > 65 && pct <= 85;
   return (
@@ -29,8 +36,8 @@ export function ContextMeter({ modelId, used }: Props) {
           }}
         />
       </div>
-      <span title={`${used.toLocaleString()} of ${m.contextWindow.toLocaleString()} tokens`}>
-        {formatTokens(used)} / {formatTokens(m.contextWindow)}
+      <span title={`${Math.round(totalUsed).toLocaleString()} of ${m.contextWindow.toLocaleString()} tokens`}>
+        {formatTokens(Math.round(totalUsed))} / {formatTokens(m.contextWindow)}
       </span>
     </div>
   );

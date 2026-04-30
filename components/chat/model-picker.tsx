@@ -1,5 +1,6 @@
 "use client";
 
+import type { RefObject } from "react";
 import { ChevronDown, Sparkles, Eye, ImageIcon, Lock, Check, Brain, Loader2, AlertTriangle, Zap } from "lucide-react";
 import { Dropdown, DropdownLabel, DropdownSeparator } from "@/components/ui/dropdown";
 import { getModel, MODEL_REGISTRY } from "@/lib/models/registry";
@@ -7,7 +8,7 @@ import { useAvailableModels, type ModelHealthState } from "@/lib/chat/use-models
 import type { ModelEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-interface Props {
+export interface Props {
   modelId: string;
   onChange: (id: string) => void;
   size?: "sm" | "md";
@@ -15,14 +16,41 @@ interface Props {
   disabled?: boolean;
   disabledReason?: string;
   side?: "top" | "bottom";
+  /**
+   * Called when the user clicks the picker while it is `disabled` (locked chat). The parent
+   * is expected to surface the "Switch model — start a new chat" dialog.
+   */
+  onRequestSwitch?: () => void;
+  /**
+   * Optional ref attached to the trigger button. Used by the composer to programmatically
+   * open the picker via `Cmd/Ctrl + K`.
+   */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
-export function ModelPicker({ modelId, onChange, size = "md", filter = "all", disabled, disabledReason, side = "top" }: Props) {
+export function ModelPicker({
+  modelId,
+  onChange,
+  size = "md",
+  filter = "all",
+  disabled,
+  disabledReason,
+  side = "top",
+  onRequestSwitch,
+  triggerRef,
+}: Props) {
   const current = getModel(modelId);
   const { entries, health, loading } = useAvailableModels();
 
   // Group available entries by category. Fall back to the static registry while loading.
-  const list = entries.length > 0 ? entries : MODEL_REGISTRY;
+  // Hide only explicitly-unavailable chat models — non-commercial entries (e.g. FLUX.1 Dev
+  // and FLUX.1 Kontext) are still free on the NIM trial, so we surface them and let the
+  // "non-commercial" pill on the row warn the user about license restrictions.
+  const rawList = entries.length > 0 ? entries : MODEL_REGISTRY;
+  const list = rawList.filter((m) => {
+    if (m.endpoint === "chat" && health[m.id]?.state === "unavailable") return false;
+    return true;
+  });
   const reasoning = list.filter((m) => m.category === "reasoning");
   const multi = list.filter((m) => m.category === "multimodal");
   const img = list.filter((m) => m.category === "image");
@@ -35,13 +63,21 @@ export function ModelPicker({ modelId, onChange, size = "md", filter = "all", di
   if (disabled) {
     return (
       <button
+        ref={triggerRef}
         type="button"
         title={disabledReason || "Model is locked. Start a new chat to switch."}
         className={cn(
-          "btn btn-secondary cursor-not-allowed opacity-70",
+          "btn btn-secondary opacity-70",
+          onRequestSwitch ? "cursor-pointer" : "cursor-not-allowed",
           size === "sm" ? "h-8 px-2 text-[12px]" : "h-9 px-3 text-[13px]"
         )}
-        onClick={(e) => e.preventDefault()}
+        onClick={(e) => {
+          if (onRequestSwitch) {
+            onRequestSwitch();
+          } else {
+            e.preventDefault();
+          }
+        }}
       >
         <span className="flex items-center gap-2 max-w-[280px]">
           <Lock className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
@@ -56,6 +92,7 @@ export function ModelPicker({ modelId, onChange, size = "md", filter = "all", di
       side={side}
       trigger={
         <button
+          ref={triggerRef}
           className={cn(
             "btn btn-secondary",
             size === "sm" ? "h-8 px-2 text-[12px]" : "h-9 px-3 text-[13px]"

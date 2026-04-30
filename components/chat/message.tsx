@@ -1,33 +1,46 @@
 "use client";
 
-import { useState } from "react";
-import { Copy, Check, Image as ImageIcon, FileText, RefreshCcw, ThumbsUp, ThumbsDown, GitBranch, Pencil, AlertTriangle } from "lucide-react";
+import { memo, useState } from "react";
+import { Copy, Check, Image as ImageIcon, FileText, RefreshCcw, ThumbsUp, ThumbsDown, Pencil, AlertTriangle, ArrowRight } from "lucide-react";
+import { toast } from "sonner";
 import type { ChatMessage, ArtifactRecord } from "@/lib/types";
 import { Markdown } from "./markdown";
 import { ReasoningDisclosure } from "./reasoning-disclosure";
 import { ArtifactCard } from "./artifact-card";
+import { Lightbox } from "./lightbox";
 import { Tooltip } from "@/components/ui/tooltip";
+import { authedFetch } from "@/components/auth-provider";
 import { getModel } from "@/lib/models/registry";
 import { cn } from "@/lib/utils";
 import { formatTokens } from "@/lib/utils";
 
 interface Props {
+  chatId: string | null;
   message: ChatMessage;
   artifacts: Map<string, ArtifactRecord>;
   isStreaming?: boolean;
   selectedArtifactId?: string | null;
   onSelectArtifact: (id: string) => void;
   onRegenerate?: () => void;
+  onContinue?: () => void;
   onEditUserMessage?: (newText: string) => void;
 }
 
+// Memoized markdown wrapper — re-renders only when the rendered string changes.
+const MemoizedMarkdown = memo(
+  Markdown,
+  (prev, next) => prev.content === next.content && prev.className === next.className
+);
+
 export function MessageView({
+  chatId,
   message,
   artifacts,
   isStreaming,
   selectedArtifactId,
   onSelectArtifact,
   onRegenerate,
+  onContinue,
   onEditUserMessage,
 }: Props) {
   const isUser = message.role === "user";
@@ -72,12 +85,11 @@ export function MessageView({
         {imageParts.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-2 not-prose">
             {imageParts.map((p, i) => (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img
+              <ImageWithLightbox
                 key={i}
                 src={p.downloadUrl || p.storagePath || ""}
                 alt={p.fileName || "image"}
-                className="rounded-lg max-h-72 border"
+                className="rounded-lg max-h-72 border cursor-zoom-in transition-opacity hover:opacity-95"
               />
             ))}
           </div>
@@ -101,35 +113,37 @@ export function MessageView({
         )}
 
         {text || isStreaming ? (
-          <Markdown
-            content={text + (isStreaming && text ? " ▍" : "")}
-            renderArtifactRef={(id) => {
-              const a = artifacts.get(id);
-              if (!a) {
+          <div className={cn(isStreaming && text && "streaming-md")}>
+            <MemoizedMarkdown
+              content={text}
+              renderArtifactRef={(id) => {
+                const a = artifacts.get(id);
+                if (!a) {
+                  return (
+                    <ArtifactCard
+                      id={id}
+                      type="code"
+                      title="Generating artifact…"
+                      isStreaming={true}
+                      onClick={() => onSelectArtifact(id)}
+                    />
+                  );
+                }
                 return (
                   <ArtifactCard
                     id={id}
-                    type="code"
-                    title="Generating artifact…"
-                    isStreaming={true}
+                    type={a.type}
+                    title={a.title}
+                    language={a.language}
+                    bodyLength={a.body?.length}
+                    isStreaming={isStreaming}
+                    isSelected={selectedArtifactId === id}
                     onClick={() => onSelectArtifact(id)}
                   />
                 );
-              }
-              return (
-                <ArtifactCard
-                  id={id}
-                  type={a.type}
-                  title={a.title}
-                  language={a.language}
-                  bodyLength={a.body?.length}
-                  isStreaming={isStreaming}
-                  isSelected={selectedArtifactId === id}
-                  onClick={() => onSelectArtifact(id)}
-                />
-              );
-            }}
-          />
+              }}
+            />
+          </div>
         ) : null}
 
         {isStreaming && !text && !reasoningPart?.reasoningText && (
@@ -141,20 +155,43 @@ export function MessageView({
         )}
       </div>
 
-      {/* Interrupted-turn recovery: empty assistant message with no finishReason. */}
+      {/* Interrupted-turn recovery: empty assistant message with a non-stop finishReason. */}
       {!isStreaming && !text && !reasoningPart && message.finishReason !== "stop" && message.finishReason !== "length" && (
         <InterruptedNotice onRetry={onRegenerate} />
       )}
 
       {!isStreaming && text && (
         <AssistantActions
+          chatId={chatId}
+          messageId={message.id}
           text={text}
           modelId={message.model}
           usage={message.usage ?? null}
+          initialFeedback={
+            (message as ChatMessage & { feedback?: { rating?: "up" | "down" } }).feedback?.rating ?? null
+          }
           onRegenerate={onRegenerate}
+          onContinue={message.finishReason === "length" ? onContinue : undefined}
         />
       )}
     </div>
+  );
+}
+
+function ImageWithLightbox({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!src) return null;
+  return (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={alt}
+        onClick={() => setOpen(true)}
+        className={className}
+      />
+      {open && <Lightbox src={src} alt={alt} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 
@@ -229,12 +266,11 @@ function UserMessage({
         {imageParts.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-1.5 justify-end">
             {imageParts.map((p, i) => (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img
+              <ImageWithLightbox
                 key={i}
                 src={p.downloadUrl || p.storagePath || ""}
                 alt={p.fileName || "image"}
-                className="rounded-lg max-h-64 border"
+                className="rounded-lg max-h-64 border cursor-zoom-in transition-opacity hover:opacity-95"
               />
             ))}
           </div>
@@ -295,24 +331,58 @@ function ModelBadge({ vendor, displayName }: { vendor?: string; displayName?: st
 }
 
 function AssistantActions({
+  chatId,
+  messageId,
   text,
   modelId,
   usage,
+  initialFeedback,
   onRegenerate,
+  onContinue,
 }: {
+  chatId: string | null;
+  messageId: string;
   text: string;
   modelId?: string;
   usage: ChatMessage["usage"];
+  initialFeedback: "up" | "down" | null;
   onRegenerate?: () => void;
+  onContinue?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+  const [feedback, setFeedback] = useState<"up" | "down" | null>(initialFeedback);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
 
   function copy() {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     });
+  }
+
+  async function submitFeedback(rating: "up" | "down") {
+    const next = feedback === rating ? null : rating;
+    // Optimistic UI; revert on failure.
+    const prev = feedback;
+    setFeedback(next);
+    if (!chatId || messageId.startsWith("tmp-")) return; // not yet persisted
+    if (next === null) return; // current API doesn't support clearing — leave the local toggle visual only
+    setFeedbackBusy(true);
+    try {
+      const res = await authedFetch(
+        `/api/chats/${chatId}/messages/${messageId}/feedback`,
+        {
+          method: "POST",
+          body: JSON.stringify({ rating: next }),
+        }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      setFeedback(prev);
+      toast.error(`Couldn't save feedback: ${(e as Error).message}`);
+    } finally {
+      setFeedbackBusy(false);
+    }
   }
 
   return (
@@ -327,7 +397,8 @@ function AssistantActions({
       </Tooltip>
       <Tooltip label="Helpful">
         <button
-          onClick={() => setFeedback((f) => (f === "up" ? null : "up"))}
+          onClick={() => void submitFeedback("up")}
+          disabled={feedbackBusy}
           className={cn("btn btn-ghost h-7 w-7 p-0", feedback === "up" && "text-[rgb(var(--color-success))]")}
         >
           <ThumbsUp className="h-3.5 w-3.5" />
@@ -335,7 +406,8 @@ function AssistantActions({
       </Tooltip>
       <Tooltip label="Not helpful">
         <button
-          onClick={() => setFeedback((f) => (f === "down" ? null : "down"))}
+          onClick={() => void submitFeedback("down")}
+          disabled={feedbackBusy}
           className={cn("btn btn-ghost h-7 w-7 p-0", feedback === "down" && "text-[rgb(var(--color-danger))]")}
         >
           <ThumbsDown className="h-3.5 w-3.5" />
@@ -348,11 +420,18 @@ function AssistantActions({
           </button>
         </Tooltip>
       )}
-      <Tooltip label="Branch from here (coming soon)">
-        <button disabled className="btn btn-ghost h-7 w-7 p-0">
-          <GitBranch className="h-3.5 w-3.5" />
-        </button>
-      </Tooltip>
+      {onContinue && (
+        <Tooltip label="Continue (output was truncated)">
+          <button
+            onClick={onContinue}
+            className="btn btn-ghost h-7 px-2 text-[11px] inline-flex items-center gap-1"
+            style={{ color: "rgb(var(--color-accent))" }}
+          >
+            <ArrowRight className="h-3.5 w-3.5" />
+            Continue
+          </button>
+        </Tooltip>
+      )}
       <span className="ml-auto text-[10.5px] tabular-nums">
         {usage && `${formatTokens(usage.totalTokens)} tokens`}
         {usage && modelId && " · "}

@@ -25,18 +25,42 @@ export function applyThinkingMode(
     ...req,
   };
 
+  // For every "off" path we belt-and-brace: send the vendor-specific disable knob AND
+  // a chat-template flag, because some NIM endpoints honor only one and silently emit
+  // reasoning deltas otherwise.
   if (model.id.startsWith("deepseek-ai/deepseek-v4")) {
-    if (effectiveMode === "off") out.reasoning_effort = "low";
-    else if (effectiveMode === "high") out.reasoning_effort = "high";
-    else if (effectiveMode === "max") out.reasoning_effort = "max";
-  } else if (model.id === "deepseek-ai/deepseek-v3.2") {
-    if (effectiveMode === "off") out.reasoning_effort = "low";
-    else out.reasoning_effort = "high";
+    if (effectiveMode === "off") {
+      out.reasoning_effort = "low";
+      out.chat_template_kwargs = {
+        ...(out.chat_template_kwargs || {}),
+        thinking: false,
+        enable_thinking: false,
+      };
+    } else if (effectiveMode === "high") {
+      out.reasoning_effort = "high";
+    } else if (effectiveMode === "max") {
+      out.reasoning_effort = "max";
+    }
+  } else if (model.id === "deepseek-ai/deepseek-v3.2" || model.id === "deepseek-ai/deepseek-v3.1-terminus") {
+    if (effectiveMode === "off") {
+      out.reasoning_effort = "low";
+      out.chat_template_kwargs = {
+        ...(out.chat_template_kwargs || {}),
+        thinking: false,
+        enable_thinking: false,
+      };
+    } else {
+      out.reasoning_effort = "high";
+    }
   } else if (model.id === "moonshotai/kimi-k2-thinking") {
-    // Always on.
-  } else if (model.id === "z-ai/glm-5.1") {
+    // Always on per Moonshot — no disable knob. UI hides the toggle for this model.
+  } else if (model.id === "z-ai/glm-5.1" || model.id === "z-ai/glm5") {
     out.thinking = { type: effectiveMode === "off" ? "disabled" : "enabled" };
-  } else if (model.id === "qwen/qwen3.5-397b-a17b") {
+    out.chat_template_kwargs = {
+      ...(out.chat_template_kwargs || {}),
+      enable_thinking: effectiveMode !== "off",
+    };
+  } else if (model.id.startsWith("qwen/qwen3.5") || model.id.startsWith("qwen/qwen3-next")) {
     out.chat_template_kwargs = {
       ...(out.chat_template_kwargs || {}),
       enable_thinking: effectiveMode !== "off",
