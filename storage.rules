@@ -1,0 +1,17 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function appCheckOk() {
+      return request.app != null;
+    }
+
+    match /users/{uid}/{path=**} {
+      // Reads of attachments / generated images go through signed URLs minted by the
+      // server, but allow direct reads by the owner as a fallback.
+      allow read: if request.auth != null && request.auth.uid == uid && appCheckOk();
+      // Direct client writes are blocked — uploads go through signed PUT URLs from /api/files,
+      // which already include scope and ToS checks.
+      allow write: if false;
+    }
+  }
+}

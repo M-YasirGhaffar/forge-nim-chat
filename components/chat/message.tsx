@@ -1,0 +1,362 @@
+"use client";
+
+import { useState } from "react";
+import { Copy, Check, Image as ImageIcon, FileText, RefreshCcw, ThumbsUp, ThumbsDown, GitBranch, Pencil, AlertTriangle } from "lucide-react";
+import type { ChatMessage, ArtifactRecord } from "@/lib/types";
+import { Markdown } from "./markdown";
+import { ReasoningDisclosure } from "./reasoning-disclosure";
+import { ArtifactCard } from "./artifact-card";
+import { Tooltip } from "@/components/ui/tooltip";
+import { getModel } from "@/lib/models/registry";
+import { cn } from "@/lib/utils";
+import { formatTokens } from "@/lib/utils";
+
+interface Props {
+  message: ChatMessage;
+  artifacts: Map<string, ArtifactRecord>;
+  isStreaming?: boolean;
+  selectedArtifactId?: string | null;
+  onSelectArtifact: (id: string) => void;
+  onRegenerate?: () => void;
+  onEditUserMessage?: (newText: string) => void;
+}
+
+export function MessageView({
+  message,
+  artifacts,
+  isStreaming,
+  selectedArtifactId,
+  onSelectArtifact,
+  onRegenerate,
+  onEditUserMessage,
+}: Props) {
+  const isUser = message.role === "user";
+  const model = message.model ? getModel(message.model) : undefined;
+
+  const text = message.parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text || "")
+    .join("\n");
+  const reasoningPart = message.parts.find((p) => p.type === "reasoning");
+  const imageParts = message.parts.filter((p) => p.type === "image");
+  const fileParts = message.parts.filter((p) => p.type === "file");
+
+  if (isUser) {
+    return (
+      <UserMessage
+        text={text}
+        imageParts={imageParts}
+        fileParts={fileParts}
+        onEdit={onEditUserMessage}
+      />
+    );
+  }
+
+  return (
+    <div className="group/message">
+      {/* Vendor + model badge */}
+      <div className="flex items-center gap-2 mb-1.5">
+        <ModelBadge vendor={model?.vendor} displayName={model?.displayName} />
+      </div>
+
+      {reasoningPart?.reasoningText && (
+        <ReasoningDisclosure
+          text={reasoningPart.reasoningText}
+          durationMs={reasoningPart.durationMs}
+          isStreaming={isStreaming && !text}
+          defaultOpen={Boolean(isStreaming && !text)}
+        />
+      )}
+
+      <div className="prose-chat">
+        {imageParts.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2 not-prose">
+            {imageParts.map((p, i) => (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                key={i}
+                src={p.downloadUrl || p.storagePath || ""}
+                alt={p.fileName || "image"}
+                className="rounded-lg max-h-72 border"
+              />
+            ))}
+          </div>
+        )}
+        {fileParts.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2 not-prose">
+            {fileParts.map((p, i) => (
+              <a
+                key={i}
+                href={p.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs"
+                style={{ color: "rgb(var(--color-fg-muted))" }}
+              >
+                {p.mimeType?.startsWith("image/") ? <ImageIcon className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+                {p.fileName || "attachment"}
+              </a>
+            ))}
+          </div>
+        )}
+
+        {text || isStreaming ? (
+          <Markdown
+            content={text + (isStreaming && text ? " ▍" : "")}
+            renderArtifactRef={(id) => {
+              const a = artifacts.get(id);
+              if (!a) {
+                return (
+                  <ArtifactCard
+                    id={id}
+                    type="code"
+                    title="Generating artifact…"
+                    isStreaming={true}
+                    onClick={() => onSelectArtifact(id)}
+                  />
+                );
+              }
+              return (
+                <ArtifactCard
+                  id={id}
+                  type={a.type}
+                  title={a.title}
+                  language={a.language}
+                  bodyLength={a.body?.length}
+                  isStreaming={isStreaming}
+                  isSelected={selectedArtifactId === id}
+                  onClick={() => onSelectArtifact(id)}
+                />
+              );
+            }}
+          />
+        ) : null}
+
+        {isStreaming && !text && !reasoningPart?.reasoningText && (
+          <div className="flex items-center gap-1.5 py-2 not-prose" style={{ color: "rgb(var(--color-fg-muted))" }}>
+            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: "150ms" }} />
+            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: "300ms" }} />
+          </div>
+        )}
+      </div>
+
+      {/* Interrupted-turn recovery: empty assistant message with no finishReason. */}
+      {!isStreaming && !text && !reasoningPart && message.finishReason !== "stop" && message.finishReason !== "length" && (
+        <InterruptedNotice onRetry={onRegenerate} />
+      )}
+
+      {!isStreaming && text && (
+        <AssistantActions
+          text={text}
+          modelId={message.model}
+          usage={message.usage ?? null}
+          onRegenerate={onRegenerate}
+        />
+      )}
+    </div>
+  );
+}
+
+function InterruptedNotice({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-[rgb(var(--color-warning)/0.4)] bg-[rgb(var(--color-warning)/0.06)] px-3 py-2 text-[12px]">
+      <AlertTriangle className="h-3.5 w-3.5" style={{ color: "rgb(var(--color-warning))" }} />
+      <span style={{ color: "rgb(var(--color-fg-muted))" }}>
+        This generation was interrupted (page reload or network drop).
+      </span>
+      {onRetry && (
+        <button onClick={onRetry} className="btn btn-ghost h-6 px-1.5 text-[11px] -mr-1">
+          <RefreshCcw className="h-3 w-3" /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+function UserMessage({
+  text,
+  imageParts,
+  fileParts,
+  onEdit,
+}: {
+  text: string;
+  imageParts: import("@/lib/types").MessagePart[];
+  fileParts: import("@/lib/types").MessagePart[];
+  onEdit?: (text: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+
+  if (editing && onEdit) {
+    return (
+      <div className="ml-auto max-w-[88%] rounded-2xl bg-[rgb(var(--color-bg-soft))] p-3">
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+          className="w-full resize-none bg-transparent outline-none text-[15px] leading-6"
+        />
+        <div className="mt-2 flex items-center justify-end gap-2">
+          <button
+            onClick={() => {
+              setDraft(text);
+              setEditing(false);
+            }}
+            className="btn btn-ghost h-8 px-3 text-[12px]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onEdit(draft);
+              setEditing(false);
+            }}
+            disabled={!draft.trim() || draft === text}
+            className="btn btn-primary h-8 px-3 text-[12px]"
+          >
+            Save &amp; submit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/message flex justify-end">
+      <div className="max-w-[88%]">
+        {imageParts.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-1.5 justify-end">
+            {imageParts.map((p, i) => (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                key={i}
+                src={p.downloadUrl || p.storagePath || ""}
+                alt={p.fileName || "image"}
+                className="rounded-lg max-h-64 border"
+              />
+            ))}
+          </div>
+        )}
+        {fileParts.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-1.5 justify-end">
+            {fileParts.map((p, i) => (
+              <a
+                key={i}
+                href={p.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs"
+                style={{ color: "rgb(var(--color-fg-muted))" }}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                {p.fileName || "attachment"}
+              </a>
+            ))}
+          </div>
+        )}
+        {text && (
+          <div className="rounded-[20px] bg-[rgb(var(--color-bg-soft))] px-4 py-2.5 text-[15px] leading-6 whitespace-pre-wrap">
+            {text}
+          </div>
+        )}
+        {onEdit && (
+          <div className="mt-1 flex justify-end opacity-0 group-hover/message:opacity-100 transition-opacity">
+            <button
+              onClick={() => {
+                setDraft(text);
+                setEditing(true);
+              }}
+              className="btn btn-ghost h-7 px-2 text-[11px]"
+              style={{ color: "rgb(var(--color-fg-muted))" }}
+            >
+              <Pencil className="h-3 w-3" />
+              Edit
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModelBadge({ vendor, displayName }: { vendor?: string; displayName?: string }) {
+  if (!displayName) return null;
+  const initial = (vendor || displayName).charAt(0).toUpperCase();
+  return (
+    <div className="flex items-center gap-2 text-[12px]" style={{ color: "rgb(var(--color-fg-muted))" }}>
+      <div className="h-5 w-5 rounded-full bg-gradient-to-br from-[rgb(var(--color-accent))] to-[rgb(var(--color-accent)/0.55)] grid place-items-center text-[10px] font-semibold text-white shadow-sm">
+        {initial}
+      </div>
+      <span className="font-medium" style={{ color: "rgb(var(--color-fg))" }}>{displayName}</span>
+    </div>
+  );
+}
+
+function AssistantActions({
+  text,
+  modelId,
+  usage,
+  onRegenerate,
+}: {
+  text: string;
+  modelId?: string;
+  usage: ChatMessage["usage"];
+  onRegenerate?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+
+  function copy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    });
+  }
+
+  return (
+    <div
+      className="mt-2 flex items-center gap-0.5 transition-opacity opacity-50 group-hover/message:opacity-100"
+      style={{ color: "rgb(var(--color-fg-muted))" }}
+    >
+      <Tooltip label={copied ? "Copied" : "Copy"}>
+        <button onClick={copy} className="btn btn-ghost h-7 w-7 p-0">
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+      </Tooltip>
+      <Tooltip label="Helpful">
+        <button
+          onClick={() => setFeedback((f) => (f === "up" ? null : "up"))}
+          className={cn("btn btn-ghost h-7 w-7 p-0", feedback === "up" && "text-[rgb(var(--color-success))]")}
+        >
+          <ThumbsUp className="h-3.5 w-3.5" />
+        </button>
+      </Tooltip>
+      <Tooltip label="Not helpful">
+        <button
+          onClick={() => setFeedback((f) => (f === "down" ? null : "down"))}
+          className={cn("btn btn-ghost h-7 w-7 p-0", feedback === "down" && "text-[rgb(var(--color-danger))]")}
+        >
+          <ThumbsDown className="h-3.5 w-3.5" />
+        </button>
+      </Tooltip>
+      {onRegenerate && (
+        <Tooltip label="Regenerate">
+          <button onClick={onRegenerate} className="btn btn-ghost h-7 w-7 p-0">
+            <RefreshCcw className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+      )}
+      <Tooltip label="Branch from here (coming soon)">
+        <button disabled className="btn btn-ghost h-7 w-7 p-0">
+          <GitBranch className="h-3.5 w-3.5" />
+        </button>
+      </Tooltip>
+      <span className="ml-auto text-[10.5px] tabular-nums">
+        {usage && `${formatTokens(usage.totalTokens)} tokens`}
+        {usage && modelId && " · "}
+      </span>
+    </div>
+  );
+}

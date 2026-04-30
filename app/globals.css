@@ -1,0 +1,252 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  --color-bg: 250 250 250;
+  --color-bg-elev: 255 255 255;
+  --color-bg-soft: 244 244 244;
+  --color-fg: 23 23 23;
+  --color-fg-muted: 90 90 95;
+  --color-fg-subtle: 140 140 145;
+  --color-border: 230 230 232;
+  --color-border-strong: 210 210 215;
+  --color-accent: 70 95 255;
+  --color-accent-fg: 255 255 255;
+  --color-success: 30 150 90;
+  --color-warning: 200 130 0;
+  --color-danger: 200 50 60;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+    --color-bg: 14 14 16;
+    --color-bg-elev: 22 22 26;
+    --color-bg-soft: 28 28 32;
+    --color-fg: 238 238 242;
+    --color-fg-muted: 160 160 168;
+    --color-fg-subtle: 110 110 118;
+    --color-border: 38 38 44;
+    --color-border-strong: 60 60 68;
+    --color-accent: 130 150 255;
+    --color-accent-fg: 14 14 16;
+    --color-success: 60 200 130;
+    --color-warning: 240 180 50;
+    --color-danger: 240 90 100;
+  }
+
+  html, body {
+    background-color: rgb(var(--color-bg));
+    color: rgb(var(--color-fg));
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: rgb(var(--color-border));
+  }
+
+  ::selection {
+    background-color: rgb(var(--color-accent) / 0.25);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--color-border-strong));
+    border-radius: 8px;
+    border: 2px solid rgb(var(--color-bg));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--color-fg-subtle));
+  }
+}
+
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.25rem;
+    padding-inline: 0.875rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 60ms ease;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid transparent;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background-color: rgb(var(--color-accent));
+    color: rgb(var(--color-accent-fg));
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: rgb(var(--color-accent) / 0.92);
+  }
+  .btn-secondary {
+    background-color: rgb(var(--color-bg-soft));
+    color: rgb(var(--color-fg));
+    border-color: rgb(var(--color-border));
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background-color: rgb(var(--color-border) / 0.6);
+  }
+  .btn-ghost {
+    background-color: transparent;
+    color: rgb(var(--color-fg-muted));
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: rgb(var(--color-bg-soft));
+    color: rgb(var(--color-fg));
+  }
+
+  .input {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    border-radius: 0.5rem;
+    background-color: rgb(var(--color-bg-elev));
+    border: 1px solid rgb(var(--color-border));
+    color: rgb(var(--color-fg));
+    font-size: 0.875rem;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .input:focus {
+    outline: none;
+    border-color: rgb(var(--color-accent));
+    box-shadow: 0 0 0 3px rgb(var(--color-accent) / 0.18);
+  }
+
+  .card {
+    background-color: rgb(var(--color-bg-elev));
+    border: 1px solid rgb(var(--color-border));
+    border-radius: 0.75rem;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    background-color: rgb(var(--color-bg-soft));
+    color: rgb(var(--color-fg-muted));
+    font-size: 0.7rem;
+    font-weight: 500;
+    border: 1px solid rgb(var(--color-border));
+  }
+
+  .prose-chat {
+    max-width: 100%;
+    color: rgb(var(--color-fg));
+    line-height: 1.65;
+    font-size: 0.95rem;
+  }
+  .prose-chat p { margin: 0.6em 0; }
+  .prose-chat p:first-child { margin-top: 0; }
+  .prose-chat p:last-child { margin-bottom: 0; }
+  .prose-chat h1 { font-size: 1.5em; font-weight: 700; margin: 0.9em 0 0.4em; }
+  .prose-chat h2 { font-size: 1.25em; font-weight: 700; margin: 0.8em 0 0.4em; }
+  .prose-chat h3 { font-size: 1.1em; font-weight: 600; margin: 0.7em 0 0.3em; }
+  .prose-chat ul { padding-inline-start: 1.4em; margin: 0.5em 0; list-style: disc; }
+  .prose-chat ol { padding-inline-start: 1.4em; margin: 0.5em 0; list-style: decimal; }
+  .prose-chat li { margin: 0.25em 0; }
+  .prose-chat blockquote {
+    border-inline-start: 3px solid rgb(var(--color-border-strong));
+    padding-inline-start: 0.875em;
+    color: rgb(var(--color-fg-muted));
+    margin: 0.7em 0;
+  }
+  .prose-chat code {
+    background-color: rgb(var(--color-bg-soft));
+    padding: 0.1em 0.35em;
+    border-radius: 0.3em;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+  }
+  .prose-chat pre {
+    background-color: rgb(var(--color-bg-soft));
+    border: 1px solid rgb(var(--color-border));
+    padding: 0.875em 1em;
+    border-radius: 0.625em;
+    overflow-x: auto;
+    margin: 0.7em 0;
+    font-size: 0.85em;
+  }
+  .prose-chat pre code {
+    background: transparent;
+    padding: 0;
+  }
+  .prose-chat a {
+    color: rgb(var(--color-accent));
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .prose-chat hr {
+    border: none;
+    border-top: 1px solid rgb(var(--color-border));
+    margin: 1.2em 0;
+  }
+  .prose-chat table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 0.88em;
+  }
+  .prose-chat th, .prose-chat td {
+    border: 1px solid rgb(var(--color-border));
+    padding: 0.45em 0.7em;
+    text-align: left;
+  }
+  .prose-chat th {
+    background-color: rgb(var(--color-bg-soft));
+    font-weight: 600;
+  }
+
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--color-bg-soft)) 0%,
+      rgb(var(--color-border)) 50%,
+      rgb(var(--color-bg-soft)) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .blink-cursor::after {
+    content: "▍";
+    color: rgb(var(--color-accent));
+    margin-inline-start: 0.05em;
+    animation: blink 1.05s steps(2, start) infinite;
+  }
+  @keyframes blink {
+    50% { visibility: hidden; }
+  }
+}
+
+.scroll-fade-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, black 0, black calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0, black calc(100% - 24px), transparent 100%);
+}

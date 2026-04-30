@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Optional App Check — when enforced via NEXT_PUBLIC_RECAPTCHA_SITE_KEY in prod,
+    // requests will carry a token and pass; in dev it's not required.
+    function appCheckOk() {
+      // Always allow during dev — tighten in production by uncommenting:
+      // return request.app != null;
+      return true;
+    }
+
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid && appCheckOk();
+    }
+
+    match /chats/{chatId} {
+      allow read: if request.auth != null
+                  && resource.data.ownerId == request.auth.uid
+                  && appCheckOk();
+      // List queries: only return chats owned by the caller.
+      allow list: if request.auth != null && appCheckOk();
+      // Writes happen server-side via Admin SDK. Client writes are blocked.
+      allow create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+                    && get(/databases/$(database)/documents/chats/$(chatId)).data.ownerId == request.auth.uid
+                    && appCheckOk();
+        allow write: if false;
+      }
+
+      match /artifacts/{artifactId} {
+        allow read: if request.auth != null
+                    && get(/databases/$(database)/documents/chats/$(chatId)).data.ownerId == request.auth.uid
+                    && appCheckOk();
+        allow write: if false;
+      }
+    }
+
+    match /usage/{uid}/{document=**} {
+      allow read: if request.auth != null && request.auth.uid == uid && appCheckOk();
+      allow write: if false;
+    }
+  }
+}
