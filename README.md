@@ -2,11 +2,11 @@
 
 > **Many models. One conversation.**
 >
-> An open-source, OpenAI-compatible chat playground for testing every free LLM, VLM, and image-generation model on the NVIDIA NIM trial — all in one polished interface.
+> An open-source, OpenAI-compatible chat playground for every LLM, VLM, and image-generation model on NVIDIA NIM — all in one polished interface.
 
-Forge is a portfolio-grade Next.js 15 web app that auto-discovers models from NVIDIA's hosted inference endpoint, categorizes them, and gives you a single chat surface to compare reasoning, multimodal, coding, and image-generation flagships side by side. Sign in, pick a model, and chat with thinking traces, attachments, live artifacts, and streaming Markdown.
+Forge is a Next.js 15 web app that auto-discovers models from NVIDIA's hosted inference endpoint, categorizes them, and gives you a single chat surface to compare reasoning, multimodal, coding, and image-generation flagships side by side. Sign in, pick a model, and chat with thinking traces, attachments, live artifacts, and streaming Markdown.
 
-It's free to run end-to-end (NIM trial + Firebase Spark + Vercel Hobby), and built so anyone can fork it and point it at their own keys in under 10 minutes.
+Fork it, point it at your own keys, and you can be up in under 10 minutes. See [Configuration](#configuration) and [Usage limits](#usage-limits) before deploying.
 
 ---
 
@@ -31,15 +31,13 @@ It's free to run end-to-end (NIM trial + Firebase Spark + Vercel Hobby), and bui
 
 ## Why Forge?
 
-Most open chat clients let you talk to one model at a time. NVIDIA's NIM trial publishes ~140 model IDs across several categories — embeddings, guardrails, parsers, translators, *and* the actual chat/multimodal/image flagships. Picking through them in raw form is unusable.
+Most open chat clients let you talk to one model at a time. NVIDIA's NIM endpoint publishes ~140 model IDs across several categories — embeddings, guardrails, parsers, translators, *and* the actual chat/multimodal/image flagships. Picking through them in raw form is unusable.
 
 Forge solves three problems:
 
 1. **Discovery.** Live `/v1/models` poll, cached for 5 minutes. New flagships from existing vendors auto-appear with no code changes.
 2. **Curation.** A token + vendor + size + family/specialization filter trims the raw 140 down to ~40 actually-useful models, picking the latest+biggest variant per family.
 3. **Comparison.** One sidebar, one composer, switch models mid-conversation, watch thinking traces and rendered artifacts in real time.
-
-Everything runs against the **trial tier** of NIM — no card, no billing — and stores chats in Firestore Spark (free).
 
 ---
 
@@ -85,7 +83,7 @@ The auto-categorizer (`lib/models/filter.ts`) drops:
 - Aspect-ratio picker (1:1, 16:9, 9:16, 3:2, 2:3, 4:3, 3:4)
 - Per-model parameter clamps (Schnell: 1–4 steps, no cfg; Dev: 5–100 steps, cfg ≤ 9)
 - Aspect-correct **shimmer placeholder** while the upstream generates — no jarring layout shifts
-- Output stored inline as a data URL in Firestore (free-tier compatible — no Cloud Storage required for FLUX outputs under ~700 KB)
+- Output stored inline as a data URL in Firestore (no Cloud Storage required for FLUX outputs under ~700 KB)
 - Lightbox viewer with download
 
 ### Artifacts
@@ -204,10 +202,15 @@ All configuration goes through environment variables in `.env.local`. **Never co
 
 ### NVIDIA NIM setup
 
-1. Sign up at <https://build.nvidia.com> (free, no payment method)
+1. Sign up at <https://build.nvidia.com>
 2. Click any model card → "Get API Key"
 3. Copy the `nvapi-...` key into `NVIDIA_API_KEY`
-4. The trial gives you a few thousand free credits and reasonable per-account rate limits
+
+### Usage limits
+
+- **NVIDIA NIM**: per-model RPM caps apply. Forge already coalesces health probes and uses single-flight upstream calls so normal interactive use stays well within them. If you hit a 429, the UI surfaces a clear retry-after toast.
+- **Firebase**: Auth + Firestore are well within standard quota for personal use. Image **uploads** (multimodal vision) require Cloud Storage, which has to be enabled once via Firebase Console → Storage → "Get started" before you deploy. FLUX-generated images are inlined into Firestore and don't need Storage.
+- **Vercel**: a Hobby project is enough for personal use; the streaming routes use `runtime = "nodejs"` and are well under serverless limits.
 
 ---
 
@@ -496,10 +499,10 @@ Forge is independent and not affiliated with NVIDIA or Anthropic. NVIDIA NIM, FL
 
 ## Acknowledgments
 
-Built on top of free tiers from:
-- **NVIDIA NIM trial** — inference
-- **Firebase Spark** — auth + database
-- **Vercel Hobby** — hosting
+Built on:
+- **NVIDIA NIM** — inference
+- **Firebase** — auth + database
+- **Vercel** — hosting
 - **Upstash** — rate limiting (optional)
 
 Stack inspiration from t3.chat, openrouter.ai, and chat.openai.com.

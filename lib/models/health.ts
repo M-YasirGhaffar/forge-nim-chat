@@ -7,15 +7,15 @@ import { ALLOWED_MODELS } from "./capabilities";
  * in the picker and lets the chat route auto-fall-back to a healthy sibling on 5xx.
  *
  * Probe frequency: lazy — first call to `getHealth(id)` triggers a probe if cache is stale.
- * We deliberately avoid an aggressive cron because NIM trial caps at 40 RPM per model.
+ * We deliberately avoid an aggressive cron because the upstream enforces per-model RPM caps.
  *
- * Rationale (trial-tier rate limits):
- *   The NIM hosted trial enforces a 40 RPM per-model-per-account ceiling, and every
- *   probe consumes one of those requests. To keep the probe traffic well below user
- *   traffic we (a) cache results for 30 minutes (TTL_MS) and (b) issue probes
- *   strictly single-flight (concurrency = 1 in batchHealth). This trades freshness
- *   for headroom — by the time a user clicks an "unavailable" model, our staleness
- *   is bounded but never the dominant cause of rate-limit spend.
+ * Rationale (rate-limit headroom):
+ *   The hosted NIM endpoint enforces a per-model-per-account RPM ceiling, and every probe
+ *   consumes one of those requests. To keep probe traffic well below user traffic we
+ *   (a) cache results for 30 minutes (TTL_MS) and (b) issue probes strictly single-flight
+ *   (concurrency = 1 in batchHealth). This trades freshness for headroom — by the time a
+ *   user clicks an "unavailable" model, our staleness is bounded but never the dominant
+ *   cause of rate-limit spend.
  */
 
 export type HealthState = "available" | "slow" | "unavailable" | "unknown";
@@ -42,7 +42,7 @@ async function probe(id: string): Promise<HealthEntry> {
     return { state: "unknown", latencyMs: 0, checkedAt: Date.now(), reason: "not in allowlist" };
   }
 
-  // Image models live behind /genai/.../infer — we skip the probe (no cheap probe exists)
+  // Image models live behind /genai/.../infer — we skip the probe (no inexpensive probe exists)
   // and trust them; failures will surface at use time as a clear error.
   if (cap.endpoint === "infer") {
     return { state: "available", latencyMs: 0, checkedAt: Date.now() };

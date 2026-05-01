@@ -253,7 +253,7 @@ function HealthBadge({ state, latency }: { state: ModelHealthState; latency?: nu
       <span
         className="pill text-[10px] py-0"
         style={{ color: "rgb(var(--color-warning))", borderColor: "rgb(var(--color-warning) / 0.4)" }}
-        title={latency ? `${latency}ms response (slow)` : "Slow on free tier"}
+        title={latency ? `${latency}ms response (slow)` : "Upstream is responding slowly"}
       >
         <AlertTriangle className="h-2.5 w-2.5" />
         slow

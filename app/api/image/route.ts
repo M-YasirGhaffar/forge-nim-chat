@@ -84,8 +84,8 @@ export async function POST(req: NextRequest) {
 
   // Optional reference image (Kontext). Two cases:
   //   - "data:image/png;example_id,N" — pass through verbatim (preview API only allows N∈{0,1,2}).
-  //   - any other value (legacy Storage path) — we can't fetch from Storage on Spark
-  //     tier, so reject with a clear error.
+  //   - any other value (legacy Storage path) — reject with a clear error since the preview
+  //     endpoint won't accept arbitrary uploads.
   let referenceImage: string | undefined;
   if (body.referenceImageStoragePath) {
     if (body.referenceImageStoragePath.startsWith("data:image/")) {
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       return Response.json(
         {
           error: "reference_unavailable",
-          message: "User-uploaded reference images aren't available on the free tier. FLUX Kontext only accepts the 3 sample images on NIM's preview API.",
+          message: "FLUX Kontext only accepts the 3 sample reference images on the preview API. Custom uploads aren't supported.",
           modelId: model.id,
         },
         { status: 400 }
@@ -122,11 +122,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Free-tier path: skip Firebase Storage (Blaze-only as of Oct 2024) and inline the
-  // JPEG as a data URL persisted directly in the Firestore message. FLUX outputs are
-  // typically 80–400 KB — well under Firestore's 1 MB doc cap. If a future model
-  // produces something larger we'll see "Document size exceeds limit" from Firestore
-  // and can fall back to a 3rd-party host.
+  // Skip Cloud Storage and inline the JPEG as a data URL persisted directly in the
+  // Firestore message. FLUX outputs are typically 80–400 KB — well under Firestore's
+  // 1 MB doc cap. If a future model produces something larger we surface a 413 below.
   const ext = result.mimeType === "image/jpeg" ? "jpg" : "png";
   const dataUrl = `data:${result.mimeType};base64,${result.base64}`;
   const approxBytes = Math.ceil((result.base64.length * 3) / 4);
@@ -134,7 +132,7 @@ export async function POST(req: NextRequest) {
     return Response.json(
       {
         error: "image_too_large",
-        message: `Generated image is ${(approxBytes / 1024).toFixed(0)} KB — exceeds free-tier inline limit. Try a smaller aspect ratio or upgrade Firebase to Blaze for Storage.`,
+        message: `Generated image is ${(approxBytes / 1024).toFixed(0)} KB — exceeds the inline storage limit. Try a smaller aspect ratio.`,
         modelId: model.id,
       },
       { status: 413 }
@@ -145,7 +143,7 @@ export async function POST(req: NextRequest) {
   // ChatMessage type so older code paths still typecheck. It does not refer to a
   // real Cloud Storage object.
   const storagePath = `inline://${user.uid}/${chatId}/${assistantMessageId}.${ext}`;
-  void getAdminStorage; // intentionally unused on free tier
+  void getAdminStorage; // kept imported for parity with the chat route's signed-url helper
 
   const assistantMessage: ChatMessage = {
     id: assistantMessageId,

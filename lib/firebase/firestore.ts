@@ -58,13 +58,23 @@ export async function ensureUser(uid: string, payload: {
   return ref;
 }
 
-export async function createChat(uid: string, modelId: string, title?: string): Promise<string> {
-  const id = nanoid(12);
+export async function createChat(
+  uid: string,
+  modelId: string,
+  title?: string,
+  /**
+   * Optional pre-minted id. When the caller already echoed a provisional id to the client
+   * (e.g. via the streaming meta event), passing it here keeps the persisted document and
+   * the URL the client navigated to in sync.
+   */
+  id?: string,
+): Promise<string> {
+  const docId = id ?? nanoid(12);
   if (!adminConfigured()) {
     warnSkip("createChat");
-    return id; // Return an ephemeral id so the rest of the request still flows.
+    return docId;
   }
-  await db().collection("chats").doc(id).set({
+  await db().collection("chats").doc(docId).set({
     ownerId: uid,
     title: title ?? "New chat",
     modelLastUsed: modelId,
@@ -73,7 +83,7 @@ export async function createChat(uid: string, modelId: string, title?: string): 
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return id;
+  return docId;
 }
 
 export async function getChat(chatId: string): Promise<ChatMeta | null> {

@@ -208,30 +208,40 @@ async function handleChat(req: NextRequest) {
   /**
    * Create the chat row and persist the user message — exactly once, on first
    * delivered token. Returns true if the row exists after the call (already-existed
-   * counts).
+   * counts). Concurrent callers (fire-and-forget at first byte + awaited at end of
+   * stream) share a single in-flight promise so the chat row is created once with
+   * the provisional id we already echoed to the client.
    */
+  let inflightPersist: Promise<boolean> | null = null;
   async function ensureChatPersisted(): Promise<boolean> {
     if (chatPersisted) return true;
-    try {
-      const newId = await createChat(user.uid, model!.id, initialTitle);
-      chatId = newId;
-      await persistUserMessage({
-        chatId: newId,
-        uid: user.uid,
-        message: { id: lastUserMessageId, role: "user", parts: userParts, createdAt: Date.now() },
-      });
-      chatPersisted = true;
-      return true;
-    } catch (e) {
-      console.warn("[/api/chat] deferred persist failed:", (e as Error).message);
-      return false;
-    }
+    if (inflightPersist) return inflightPersist;
+    const idToPersist = chatId!;
+    inflightPersist = (async () => {
+      try {
+        const newId = await createChat(user.uid, model!.id, initialTitle, idToPersist);
+        chatId = newId;
+        await persistUserMessage({
+          chatId: newId,
+          uid: user.uid,
+          message: { id: lastUserMessageId, role: "user", parts: userParts, createdAt: Date.now() },
+        });
+        chatPersisted = true;
+        return true;
+      } catch (e) {
+        console.warn("[/api/chat] deferred persist failed:", (e as Error).message);
+        return false;
+      } finally {
+        inflightPersist = null;
+      }
+    })();
+    return inflightPersist;
   }
 
   // Abort controller propagated to the upstream NIM fetch. When the client
   // disconnects (Stop button, navigate away, switch chat) req.signal aborts and
-  // we tear down the upstream so we don't keep generating tokens for free-tier
-  // RPM that nobody will see.
+  // we tear down the upstream so we don't keep generating tokens for RPM quota that
+  // nobody will see.
   const upstreamAc = new AbortController();
   if (req.signal) {
     if (req.signal.aborted) upstreamAc.abort();
@@ -284,7 +294,7 @@ async function handleChat(req: NextRequest) {
               status: "slow",
               modelId,
               elapsedMs: Date.now() - reqStart,
-              message: "Free-tier capacity is busy — still waiting.",
+              message: "Upstream is busy — still waiting.",
             });
           }
         }, 12_000);
@@ -530,7 +540,7 @@ async function signedUrl(storagePath: string): Promise<string> {
 
 function friendlyError(e: NimError): string {
   if (e.status === 429) return "Rate limit hit on upstream";
-  if (e.status === 404) return "Model not available on NIM trial";
+  if (e.status === 404) return "Model not currently available";
   if (e.status >= 500) return "Upstream model error";
   return `Upstream error ${e.status}`;
 }
