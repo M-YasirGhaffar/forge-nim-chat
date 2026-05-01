@@ -29,7 +29,7 @@ interface Props {
 export function ChatSidebar({ activeChatId, onCollapse }: Props) {
   const { user, signOut } = useAuth();
   const router = useRouter();
-  const { chats, error } = useChats(user?.uid);
+  const { chats, error, removeChat } = useChats(user?.uid);
   const [search, setSearch] = useState("");
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [savingRename, setSavingRename] = useState<string | null>(null);
@@ -59,6 +59,9 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
     try {
       const res = await authedFetch(`/api/chats/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Drop the row immediately — the Firestore listener can lag a beat behind
+      // the DELETE response, so without this the deleted chat lingers in the UI.
+      removeChat(id);
       if (activeChatId === id) {
         router.push("/chat");
         window.dispatchEvent(new Event("polyglot:reset-chat"));

@@ -204,7 +204,6 @@ export async function POST(req: NextRequest) {
       imageUrl: downloadUrl,
       storagePath,
       seed: result.seed,
-      licenseCommercial: model.licenseCommercial,
       warning: `Generated image but couldn't persist chat: ${detail}`,
     });
   }
@@ -216,6 +215,5 @@ export async function POST(req: NextRequest) {
     imageUrl: downloadUrl,
     storagePath,
     seed: result.seed,
-    licenseCommercial: model.licenseCommercial,
   });
 }

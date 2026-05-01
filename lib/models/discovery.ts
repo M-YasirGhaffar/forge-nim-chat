@@ -1,14 +1,21 @@
 import "server-only";
 import { ALLOWED_MODELS, allAllowedIds, imageModelIds, buildEntry } from "./capabilities";
+import { filterAndDedupe } from "./filter";
 import type { ModelEntry } from "@/lib/types";
 import { nimListModels } from "@/lib/nim/client";
 
 /**
  * What can the user pick right now?
- *  1. NIM /v1/models is the live truth — every id it lists is surfaced.
- *  2. Image models (FLUX) don't appear in /v1/models, so we always append the
- *     allowlisted infer-endpoint entries on top.
- *  3. If NIM is unreachable, fall back to the static hint allowlist so the UI
+ *  1. NIM /v1/models is the live truth — pulled every 5 min and cached.
+ *  2. The raw list (~140 ids) is then auto-categorized by lib/models/filter.ts:
+ *     drops embeddings/guards/parsers/translators, niche fine-tune vendors, base
+ *     models, and anything < 12B; then dedupes by (family, specialization) so
+ *     only the latest+biggest variant per group survives.
+ *  3. Image models (FLUX) live on a separate endpoint and don't appear in
+ *     /v1/models — we append them on top from the cosmetic allowlist.
+ *  4. ALLOWED_MODELS is now cosmetic-only (taglines, exact context windows) —
+ *     unknown ids fall back to inferCapability() with sensible defaults.
+ *  5. If NIM is unreachable, fall back to the cosmetic allowlist so the UI
  *     never breaks during a brief upstream outage.
  */
 
@@ -44,10 +51,11 @@ export async function listAvailableEntries(): Promise<{ entries: ModelEntry[]; u
   const c = await ensureCache();
   const entries: ModelEntry[] = [];
 
-  // Surface every id NIM exposes. Capabilities come from the hint table when
-  // available, otherwise inferred from the id (so newly-launched models flow
-  // through without code edits).
-  for (const id of c.ids) {
+  // Auto-filter the raw NIM list. Capabilities come from the cosmetic hint
+  // table when available, otherwise inferred from the id pattern (so newly-
+  // launched models flow through without code edits).
+  const filteredIds = filterAndDedupe([...c.ids]);
+  for (const id of filteredIds) {
     const e = buildEntry(id);
     if (e && e.endpoint === "chat") entries.push(e);
   }

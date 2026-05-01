@@ -72,8 +72,13 @@ export default async function ChatPage({ params }: { params: Promise<{ chatId: s
     }
   }
 
+  // key={chatId} forces a remount when navigating /chat/A → /chat/B so
+  // useChatStream re-initializes from the new initialMessages. Without the key,
+  // Next.js App Router would preserve the client component instance and the
+  // previous chat's messages would linger.
   return (
     <ChatShell
+      key={chatId}
       chatId={chatId}
       initialMessages={initialMessages}
       initialArtifacts={initialArtifacts}

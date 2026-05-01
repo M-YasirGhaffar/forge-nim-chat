@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   collection,
   query,
@@ -16,10 +16,18 @@ import type { ChatMeta } from "@/lib/types";
 /**
  * Live subscription to the user's chats collection.
  * Falls back to silent retry if security rules / network blip the listener.
+ *
+ * Returns `removeChat(id)` for optimistic removal — the Firestore listener can
+ * lag a second behind the DELETE response, so the sidebar removes the row
+ * locally as soon as the API succeeds. The next snapshot tick confirms.
  */
 export function useChats(uid: string | null | undefined) {
   const [chats, setChats] = useState<ChatMeta[] | null>(uid ? null : []);
   const [error, setError] = useState<string | null>(null);
+
+  const removeChat = useCallback((id: string) => {
+    setChats((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
+  }, []);
 
   useEffect(() => {
     if (!uid) {
@@ -73,7 +81,7 @@ export function useChats(uid: string | null | undefined) {
     return () => unsub();
   }, [uid]);
 
-  return { chats, error };
+  return { chats, error, removeChat };
 }
 
 function tsToMillis(t: Timestamp | undefined): number {

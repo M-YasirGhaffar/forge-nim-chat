@@ -28,6 +28,7 @@ export default async function NewChatPage() {
 
   return (
     <ChatShell
+      key="new"
       chatId={null}
       initialMessages={[]}
       initialArtifacts={[]}

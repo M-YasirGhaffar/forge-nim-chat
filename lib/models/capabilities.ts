@@ -564,25 +564,9 @@ export const ALLOWED_MODELS: Record<string, Capability> = {
     tagline: "Highest-quality text-to-image (non-commercial).",
     endpoint: "infer",
   },
-  "black-forest-labs/flux.1-kontext-dev": {
-    vendor: "Black Forest Labs",
-    displayName: "FLUX.1 Kontext",
-    category: "image",
-    kind: "image",
-    contextWindow: 0,
-    maxOutput: 0,
-    supportsImages: true,
-    supportsVideo: false,
-    supportsTools: false,
-    supportsThinking: false,
-    thinkingModes: [],
-    paramHint: "Image editing",
-    paramCountB: 12,
-    license: "Non-commercial",
-    licenseCommercial: false,
-    tagline: "Edit existing images — text + reference image → image.",
-    endpoint: "infer",
-  },
+  // FLUX.1 Kontext was removed from the picker — NIM's preview API only accepts
+  // their 3 sample reference images (data:image/png;example_id,N). User-uploaded
+  // refs are rejected, so the model isn't usable end-to-end on the trial tier.
 };
 
 /**

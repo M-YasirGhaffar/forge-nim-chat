@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleChat(req: NextRequest) {
-  let user;
+  let user: Awaited<ReturnType<typeof requireUser>>;
   try {
     user = await requireUser(req);
     await maybeRequireAppCheck(req);

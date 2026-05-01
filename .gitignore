@@ -16,3 +16,6 @@ next-env.d.ts
 # never commit service account keys
 *-firebase-adminsdk-*.json
 service-account*.json
+
+# Firebase project link (per-developer; use .firebaserc.example as template)
+.firebaserc
