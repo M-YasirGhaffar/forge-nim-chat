@@ -288,7 +288,7 @@ export function Composer(props: Props) {
           style={{ minHeight: "52px", overflowY: taOverflow }}
         />
 
-        <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1 flex-wrap">
+        <div className="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 pb-2 pt-1 min-w-0">
           {/* Left zone: attach (only rendered when this model accepts attachments) */}
           {(supportsImages || supportsVideo || isImage) && (
             <>
@@ -296,7 +296,7 @@ export function Composer(props: Props) {
                 <button
                   type="button"
                   onClick={() => fileRef.current?.click()}
-                  className="btn btn-ghost h-9 w-9 p-0 rounded-full"
+                  className="btn btn-ghost h-9 w-9 p-0 rounded-full shrink-0"
                   disabled={isStreaming || uploading}
                 >
                   <Plus className="h-4 w-4" />
@@ -313,41 +313,42 @@ export function Composer(props: Props) {
             </>
           )}
 
-          {/* Center zone: model + thinking. Always show all categories so users can switch
-              between text and image models in a fresh chat without hunting for a hidden picker. */}
-          <ModelPicker
-            modelId={modelId}
-            onChange={setModelId}
-            size="sm"
-            filter="all"
-            disabled={modelLocked}
-            side="top"
-            onRequestSwitch={onRequestSwitch}
-            triggerRef={pickerTriggerRef}
-          />
-          {!isImage && model.thinkingModes.length > 1 && (
-            <ThinkingControl
-              modes={model.thinkingModes}
-              value={thinkingMode}
-              onChange={setThinkingMode}
-            />
-          )}
-
-          {isImage && imageMode && (
-            <ImageOptions
-              aspectRatio={imageMode.aspectRatio}
-              setAspectRatio={imageMode.setAspectRatio}
-              steps={imageMode.steps}
-              setSteps={imageMode.setSteps}
-              seed={imageMode.seed}
-              setSeed={imageMode.setSeed}
+          {/* Center zone: model + thinking + image-options. Wrapped in a min-w-0 flex
+              container so the model picker label can truncate on narrow viewports
+              instead of pushing the send button off-screen. */}
+          <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 flex-1">
+            <ModelPicker
               modelId={modelId}
+              onChange={setModelId}
+              size="sm"
+              filter="all"
+              disabled={modelLocked}
+              side="top"
+              onRequestSwitch={onRequestSwitch}
+              triggerRef={pickerTriggerRef}
             />
-          )}
+            {!isImage && model.thinkingModes.length > 1 && (
+              <ThinkingControl
+                modes={model.thinkingModes}
+                value={thinkingMode}
+                onChange={setThinkingMode}
+              />
+            )}
 
-          <div className="flex-1" />
+            {isImage && imageMode && (
+              <ImageOptions
+                aspectRatio={imageMode.aspectRatio}
+                setAspectRatio={imageMode.setAspectRatio}
+                steps={imageMode.steps}
+                setSteps={imageMode.setSteps}
+                seed={imageMode.seed}
+                setSeed={imageMode.setSeed}
+                modelId={modelId}
+              />
+            )}
+          </div>
 
-          {/* Right zone: meter + submit */}
+          {/* Right zone: meter (hidden on mobile via ContextMeter itself) + submit */}
           {!isImage && model.contextWindow > 0 && contextUsed > 0 && (
             <ContextMeter
               modelId={modelId}
@@ -360,7 +361,7 @@ export function Composer(props: Props) {
             <button
               type="button"
               onClick={onAbort}
-              className="btn btn-secondary h-9 w-9 p-0 rounded-full"
+              className="btn btn-secondary h-9 w-9 p-0 rounded-full shrink-0"
               title="Stop generation"
             >
               <Square className="h-3.5 w-3.5 fill-current" />
@@ -371,7 +372,7 @@ export function Composer(props: Props) {
               onClick={handleSubmit}
               disabled={isStreaming || uploading || (!value.trim() && attachments.length === 0)}
               className={cn(
-                "btn btn-primary h-9 w-9 p-0 rounded-full transition-transform",
+                "btn btn-primary h-9 w-9 p-0 rounded-full transition-transform shrink-0",
                 (value.trim() || attachments.length > 0) && "hover:scale-[1.04]"
               )}
               title={isImage ? "Generate" : "Send (↵)"}
@@ -483,9 +484,9 @@ function ImageOptions({
   const isSchnell = modelId.includes("schnell");
   const stepRange = isSchnell ? [1, 4] : [10, 50];
   return (
-    <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "rgb(var(--color-fg-muted))" }}>
+    <div className="flex items-center gap-1.5 text-[11px] min-w-0" style={{ color: "rgb(var(--color-fg-muted))" }}>
       <select
-        className="bg-transparent border rounded-md h-7 px-1.5 text-[11px]"
+        className="bg-transparent border rounded-md h-7 px-1.5 text-[11px] shrink-0"
         value={aspectRatio}
         onChange={(e) => setAspectRatio(e.target.value)}
       >
@@ -497,7 +498,7 @@ function ImageOptions({
         <option value="4:3">4:3</option>
         <option value="3:4">3:4</option>
       </select>
-      <div className="flex items-center gap-1.5">
+      <div className="hidden sm:flex items-center gap-1.5 shrink-0">
         <span className="text-[10px]">Steps</span>
         <input
           type="range"
@@ -505,12 +506,12 @@ function ImageOptions({
           max={stepRange[1]}
           value={steps}
           onChange={(e) => setSteps(Number(e.target.value))}
-          className="h-7 w-20"
+          className="h-7 w-16 md:w-20"
         />
         <span className="tabular-nums w-5 text-right">{steps}</span>
       </div>
       {setSeed && (
-        <div className="flex items-center gap-1">
+        <div className="hidden md:flex items-center gap-1 shrink-0">
           <span className="text-[10px]">Seed</span>
           <input
             type="number"

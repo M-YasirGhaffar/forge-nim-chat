@@ -528,7 +528,14 @@ async function handleChat(req: NextRequest) {
 }
 
 async function signedUrl(storagePath: string): Promise<string> {
-  // storagePath might be a gs:// URL or a bucket-relative path.
+  // Inline-attachment paths never need a signed URL — the client embeds the data
+  // URL directly in `downloadUrl`. We only reach this branch if a legacy
+  // gs:// path slipped through from an old chat. Without a Storage bucket
+  // provisioned this will error, which is the desired outcome — we surface it
+  // as a missing-attachment instead of crashing the whole stream.
+  if (storagePath.startsWith("inline://")) {
+    throw new Error("inline attachment missing downloadUrl");
+  }
   const path = storagePath.replace(/^gs:\/\/[^/]+\//, "");
   const bucket = getAdminStorage().bucket();
   const [url] = await bucket.file(path).getSignedUrl({

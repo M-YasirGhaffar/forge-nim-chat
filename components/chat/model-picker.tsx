@@ -54,22 +54,22 @@ export function ModelPicker({
         ref={triggerRef}
         type="button"
         className={cn(
-          "btn btn-secondary opacity-70 cursor-pointer",
+          "btn btn-secondary opacity-70 cursor-pointer min-w-0",
           size === "sm" ? "h-8 px-2 text-[12px]" : "h-9 px-3 text-[13px]"
         )}
         onClick={() => onRequestSwitch?.()}
       >
-        <span className="flex items-center gap-2 max-w-[280px]">
+        <span className="flex items-center gap-2 min-w-0 max-w-[120px] sm:max-w-[200px] md:max-w-[280px]">
           {current?.category === "image" ? (
-            <ImageIcon className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+            <ImageIcon className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
           ) : current?.category === "multimodal" ? (
-            <Eye className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+            <Eye className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
           ) : (
-            <Sparkles className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+            <Sparkles className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
           )}
           <span className="truncate">{current?.displayName ?? "Choose a model"}</span>
         </span>
-        <ChevronDown className="h-3.5 w-3.5 opacity-30" />
+        <ChevronDown className="h-3.5 w-3.5 opacity-30 shrink-0" />
       </button>
     );
   }
@@ -81,24 +81,24 @@ export function ModelPicker({
         <button
           ref={triggerRef}
           className={cn(
-            "btn btn-secondary",
+            "btn btn-secondary min-w-0",
             size === "sm" ? "h-8 px-2 text-[12px]" : "h-9 px-3 text-[13px]"
           )}
         >
-          <span className="flex items-center gap-2 max-w-[280px]">
+          <span className="flex items-center gap-2 min-w-0 max-w-[120px] sm:max-w-[200px] md:max-w-[280px]">
             {current?.category === "image" ? (
-              <ImageIcon className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+              <ImageIcon className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
             ) : current?.category === "multimodal" ? (
-              <Eye className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+              <Eye className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
             ) : (
-              <Sparkles className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+              <Sparkles className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))] shrink-0" />
             )}
             <span className="truncate">{current?.displayName ?? "Choose a model"}</span>
           </span>
-          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+          <ChevronDown className="h-3.5 w-3.5 opacity-60 shrink-0" />
         </button>
       }
-      className="w-[460px]"
+      className="w-[min(460px,calc(100vw-2rem))]"
     >
       {showChat && (
         <>

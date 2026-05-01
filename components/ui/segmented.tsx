@@ -25,7 +25,7 @@ export function Segmented<T extends string>({
   return (
     <div
       className={cn(
-        "inline-flex rounded-lg border p-0.5 bg-[rgb(var(--color-bg-soft))]",
+        "inline-flex rounded-lg border p-0.5 bg-[rgb(var(--color-bg-soft))] shrink-0 whitespace-nowrap",
         size === "sm" ? "text-[11px]" : "text-xs",
         className
       )}

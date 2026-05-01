@@ -22,8 +22,8 @@ export function ContextMeter({ modelId, used, liveDelta }: Props) {
   const danger = pct > 85;
   const warn = pct > 65 && pct <= 85;
   return (
-    <div className="flex items-center gap-2 text-[11px]" style={{ color: "rgb(var(--color-fg-muted))" }}>
-      <div className="h-1.5 w-24 rounded-full bg-[rgb(var(--color-bg-soft))] overflow-hidden">
+    <div className="hidden sm:flex items-center gap-2 text-[11px] shrink-0" style={{ color: "rgb(var(--color-fg-muted))" }}>
+      <div className="h-1.5 w-16 md:w-24 rounded-full bg-[rgb(var(--color-bg-soft))] overflow-hidden">
         <div
           className="h-full transition-[width]"
           style={{
