@@ -540,14 +540,27 @@ export function ChatShell({
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
+        let msg = `Generation failed (${res.status})`;
         try {
           const json = JSON.parse(text);
-          toast.error(json.message || json.error || "Generation failed.");
+          msg = json.message || json.error || msg;
         } catch {
-          toast.error(`Generation failed (${res.status})`);
+          // text wasn't JSON, fall through with the status code
         }
+        toast.error(msg);
+        // Keep the user prompt visible and replace the shimmer with an inline error
+        // bubble so the page doesn't look like it refreshed back to empty state when
+        // a brand-new chat fails on first turn.
         stream.setMessages((prev) =>
-          prev.filter((m) => m.id !== placeholderId && m.id !== optimisticUserMessage.id)
+          prev.map((m) =>
+            m.id === placeholderId
+              ? {
+                  ...m,
+                  parts: [{ type: "text", text: `⚠️ ${msg}` }],
+                  finishReason: "error",
+                }
+              : m,
+          ),
         );
         return;
       }
@@ -586,8 +599,19 @@ export function ChatShell({
       window.dispatchEvent(new Event("polyglot:refresh-chats"));
       window.history.replaceState({}, "", `/chat/${data.chatId}`);
     } catch (e) {
-      toast.error(`Generation error: ${(e as Error).message}`);
-      stream.setMessages((prev) => prev.filter((m) => m.id !== placeholderId));
+      const msg = (e as Error).message;
+      toast.error(`Generation error: ${msg}`);
+      stream.setMessages((prev) =>
+        prev.map((m) =>
+          m.id === placeholderId
+            ? {
+                ...m,
+                parts: [{ type: "text", text: `⚠️ Network error: ${msg}` }],
+                finishReason: "error",
+              }
+            : m,
+        ),
+      );
     }
   }
 

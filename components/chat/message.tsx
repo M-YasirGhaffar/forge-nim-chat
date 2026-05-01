@@ -162,10 +162,19 @@ export function MessageView({
         )}
       </div>
 
-      {/* Interrupted-turn recovery: empty assistant message with a non-stop finishReason. */}
-      {!isStreaming && !text && !reasoningPart && message.finishReason !== "stop" && message.finishReason !== "length" && (
-        <InterruptedNotice onRetry={onRegenerate} />
-      )}
+      {/* Interrupted-turn recovery: empty assistant message with a non-stop finishReason.
+          Image/file-only assistant messages (FLUX outputs) and any message that has
+          an image part rendering count as content, so we only show the notice when the
+          bubble is genuinely empty. */}
+      {!isStreaming &&
+        !text &&
+        !reasoningPart &&
+        imageParts.length === 0 &&
+        fileParts.length === 0 &&
+        message.finishReason !== "stop" &&
+        message.finishReason !== "length" && (
+          <InterruptedNotice onRetry={onRegenerate} />
+        )}
 
       {!isStreaming && text && (
         <AssistantActions

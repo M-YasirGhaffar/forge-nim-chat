@@ -54,9 +54,17 @@ export default async function ChatPage({ params }: { params: Promise<{ chatId: s
     // Task 61: detect interrupted-stream recovery — when the latest message is a
     // user message with no assistant follow-up, append a synthetic empty assistant
     // bubble so MessageView renders the recovery notice.
+    //
+    // Grace period: streams can take 30–90s for thinking models, and the assistant
+    // message persists at end-of-stream — so a fresh user message without a follow-up
+    // is almost always a still-running turn, not an interrupt. Only inject the
+    // synthetic bubble when the user message is older than 90s; for newer ones, let
+    // the live stream client take over (or, if the user navigated away mid-stream,
+    // the next reload will pick up the persisted assistant message).
     if (initialMessages.length > 0) {
       const last = initialMessages[initialMessages.length - 1];
-      if (last.role === "user") {
+      const lastAge = Date.now() - (last.createdAt ?? Date.now());
+      if (last.role === "user" && lastAge > 90_000) {
         initialMessages = [
           ...initialMessages,
           {

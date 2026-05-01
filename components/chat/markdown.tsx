@@ -2,12 +2,15 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import { memo, useEffect, useRef, useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import "highlight.js/styles/github-dark.css";
+import "katex/dist/katex.min.css";
 
 interface MarkdownProps {
   content: string;
@@ -16,13 +19,35 @@ interface MarkdownProps {
   renderArtifactRef?: (id: string) => React.ReactNode;
 }
 
+// Reasoning-model outputs typically use the LaTeX delimiters \[ ... \] (display)
+// and \( ... \) (inline) instead of GitHub's $$ / $ form that remark-math expects.
+// Normalize before parsing so KaTeX renders them. We avoid touching code fences by
+// only transforming runs outside backtick segments.
+function normalizeMath(text: string): string {
+  if (!text) return text;
+  // Quick exit when the input has neither delimiter form.
+  if (!/\\\[|\\\(/.test(text)) return text;
+  const parts = text.split(/(`[^`]*`|```[\s\S]*?```)/g);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) continue; // odd indexes are code spans/blocks
+    parts[i] = parts[i]
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => `\n$$${inner}$$\n`)
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => `$${inner}$`);
+  }
+  return parts.join("");
+}
+
 // Heavy parser — wrap the inner ReactMarkdown render so identical text segments
 // don't re-tokenize on every parent re-render during streaming.
 const MarkdownSegment = memo(function MarkdownSegment({ text }: { text: string }) {
+  const normalized = normalizeMath(text);
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[
+        [rehypeHighlight, { detect: true, ignoreMissing: true }],
+        [rehypeKatex, { strict: false, throwOnError: false }],
+      ]}
       components={{
         pre({ children, ...rest }) {
           return <CodeBlock {...rest}>{children}</CodeBlock>;
@@ -41,7 +66,7 @@ const MarkdownSegment = memo(function MarkdownSegment({ text }: { text: string }
         },
       }}
     >
-      {text}
+      {normalized}
     </ReactMarkdown>
   );
 });
