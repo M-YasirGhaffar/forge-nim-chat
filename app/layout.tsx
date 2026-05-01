@@ -4,22 +4,12 @@ import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "Polyglot — Frontier AI, Many Models",
+  title: "Forge — Many models. One conversation.",
   description:
-    "Chat with frontier open models — DeepSeek V4, Kimi K2, Qwen 3.5, GLM 5.1, FLUX — through one fast streaming UI with thinking traces and live artifacts.",
-  applicationName: "Polyglot",
+    "A clean, fast multi-model chat. Reasoning, multimodal, and image generation in one place — all live from NVIDIA NIM.",
+  applicationName: "Forge",
   authors: [{ name: "Asim" }],
-  keywords: [
-    "AI chat",
-    "DeepSeek",
-    "Kimi",
-    "Qwen",
-    "FLUX",
-    "GLM",
-    "NVIDIA NIM",
-    "model picker",
-    "artifacts",
-  ],
+  keywords: ["AI chat", "multi-model", "NIM", "reasoning", "FLUX", "image generation"],
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"),
   icons: { icon: "/favicon.svg" },
 };

@@ -19,6 +19,7 @@ import { useAuth } from "@/components/auth-provider";
 import { toast } from "sonner";
 import Link from "next/link";
 import { Mail, Loader2, ArrowLeft, Eye, EyeOff } from "lucide-react";
+import { BrandLogo, BrandName } from "@/components/brand";
 
 /**
  * After any successful sign-in, post the fresh ID token to /api/auth/session so the
@@ -101,6 +102,7 @@ export default function LoginClient() {
         // Strip the auth params from the URL before navigating so a back-button press
         // doesn't try to re-consume an already-redeemed magic link.
         window.history.replaceState({}, "", "/login");
+        setBusy("");
         router.replace(next);
       } catch (err) {
         if (cancelled) return;
@@ -112,6 +114,13 @@ export default function LoginClient() {
       cancelled = true;
     };
   }, [router, next]);
+
+  // Safety net: if the auth listener completes (user is set) while we're still
+  // in any "busy" state, clear it. Prevents a stuck spinner if router.replace
+  // doesn't unmount us in time.
+  useEffect(() => {
+    if (user && busy) setBusy("");
+  }, [user, busy]);
 
   async function handleConfirmEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -174,7 +183,7 @@ export default function LoginClient() {
         if (name.trim()) {
           await updateProfile(cred.user, { displayName: name.trim() });
         }
-        toast.success("Account created. Welcome to Polyglot.");
+        toast.success("Account created. Welcome.");
       } else if (mode === "magic-link") {
         // Defensive: re-validate `next` here in case the local var was mutated.
         const safeRedirect = safeNext(next);
@@ -204,8 +213,8 @@ export default function LoginClient() {
         <header className="border-b">
           <div className="mx-auto max-w-6xl px-6 h-14 flex items-center">
             <Link href="/" className="flex items-center gap-2 font-semibold">
-              <Logo />
-              <span>Polyglot</span>
+              <BrandLogo size={26} />
+              <BrandName />
             </Link>
           </div>
         </header>
@@ -261,8 +270,8 @@ export default function LoginClient() {
       <header className="border-b">
         <div className="mx-auto max-w-6xl px-6 h-14 flex items-center">
           <Link href="/" className="flex items-center gap-2 font-semibold">
-            <Logo />
-            <span>Polyglot</span>
+            <BrandLogo size={26} />
+            <BrandName />
           </Link>
         </div>
       </header>
@@ -280,24 +289,22 @@ export default function LoginClient() {
           )}
 
           {(mode === "signin" || mode === "signup") && (
-            <>
-              <div className="flex items-center gap-1 rounded-lg border bg-[rgb(var(--color-bg-soft))] p-0.5 mb-5">
-                <button
-                  type="button"
-                  onClick={() => setMode("signin")}
-                  className={tabClass(mode === "signin")}
-                >
-                  Sign in
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("signup")}
-                  className={tabClass(mode === "signup")}
-                >
-                  Create account
-                </button>
-              </div>
-            </>
+            <div className="flex items-center gap-1 rounded-lg border bg-[rgb(var(--color-bg-soft))] p-0.5 mb-5">
+              <button
+                type="button"
+                onClick={() => setMode("signin")}
+                className={tabClass(mode === "signin")}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("signup")}
+                className={tabClass(mode === "signup")}
+              >
+                Create account
+              </button>
+            </div>
           )}
 
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -308,7 +315,7 @@ export default function LoginClient() {
           </h1>
           <p className="mt-1 text-sm" style={{ color: "rgb(var(--color-fg-muted))" }}>
             {mode === "signin" && "Sign in to continue your chats."}
-            {mode === "signup" && "Free trial — no credit card. Powered by NVIDIA NIM."}
+            {mode === "signup" && "Free trial — no credit card."}
             {mode === "magic-link" && "We'll email you a one-time link. Open it on this device."}
             {mode === "reset" && "Enter your email and we'll send you a reset link."}
           </p>
@@ -444,8 +451,7 @@ export default function LoginClient() {
           )}
 
           <p className="mt-5 text-xs" style={{ color: "rgb(var(--color-fg-subtle))" }}>
-            By continuing you agree to our <Link href="/about#nim-terms" className="underline">terms</Link>.
-            We never share your email. NIM trial usage is rate-limited.
+            We never share your email.
           </p>
         </div>
       </div>
@@ -539,17 +545,3 @@ function GoogleIcon({ className }: { className?: string }) {
   );
 }
 
-function Logo() {
-  return (
-    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
-      <defs>
-        <linearGradient id="lg2" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#465fff" />
-          <stop offset="1" stopColor="#a04dff" />
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#lg2)" />
-      <path d="M9 22V10h4l3 7 3-7h4v12h-3v-7l-2.6 6h-2.8L12 15v7z" fill="#fff" />
-    </svg>
-  );
-}

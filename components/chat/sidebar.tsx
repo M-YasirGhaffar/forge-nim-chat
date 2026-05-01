@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import {
   Plus,
   Trash2,
-  MessageSquare,
   PanelLeftClose,
   Loader2,
   Search,
@@ -18,9 +17,9 @@ import { useAuth, authedFetch } from "@/components/auth-provider";
 import { useChats } from "@/lib/chat/use-chats";
 import type { ChatMeta } from "@/lib/types";
 import { chatGroup, cn } from "@/lib/utils";
-import { getModel } from "@/lib/models/registry";
 import { toast } from "sonner";
 import { ProfilePopover } from "./profile-popover";
+import { BrandLogo, BrandName } from "@/components/brand";
 
 interface Props {
   activeChatId: string | null;
@@ -33,6 +32,8 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
   const { chats, error } = useChats(user?.uid);
   const [search, setSearch] = useState("");
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [savingRename, setSavingRename] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
@@ -54,51 +55,54 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
 
   async function deleteChatConfirmed(id: string) {
     setConfirmingDelete(null);
-    const res = await authedFetch(`/api/chats/${id}`, { method: "DELETE" });
-    if (res.ok) {
+    setDeletingId(id);
+    try {
+      const res = await authedFetch(`/api/chats/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       if (activeChatId === id) {
-        // Active chat just got deleted — navigate to /chat AND fire reset so the shell
-        // aborts any in-flight stream and clears messages/context-meter immediately.
-        // Without this, the user sees a "stop generating" button on a chat that no
-        // longer exists.
         router.push("/chat");
         window.dispatchEvent(new Event("polyglot:reset-chat"));
       }
-      toast.success("Chat deleted.");
-    } else {
-      toast.error("Could not delete chat.");
+    } catch (e) {
+      toast.error(`Could not delete chat: ${(e as Error).message}`);
+    } finally {
+      setDeletingId(null);
     }
   }
 
   async function renameChat(id: string, newTitle: string) {
     const trimmed = newTitle.trim().slice(0, 120);
-    if (!trimmed) return;
+    if (!trimmed) {
+      setRenameTarget(null);
+      return;
+    }
     setRenameTarget(null);
-    const res = await authedFetch(`/api/chats/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ title: trimmed }),
-    });
-    if (!res.ok) toast.error("Rename failed");
+    setSavingRename(id);
+    try {
+      const res = await authedFetch(`/api/chats/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: trimmed }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      toast.error(`Rename failed: ${(e as Error).message}`);
+    } finally {
+      setSavingRename(null);
+    }
   }
 
-  // Listen for legacy refresh events as a no-op (subscription is live now).
   useEffect(() => {
     const noop = () => {};
     window.addEventListener("polyglot:refresh-chats", noop);
     return () => window.removeEventListener("polyglot:refresh-chats", noop);
   }, []);
 
-  // Task 15: New chat without hard reload. Dispatches a reset event so chat-shell
-  // can clear in-place instead of remounting the route.
   function handleNewChat() {
     const path = window.location.pathname;
     if (path === "/chat") {
-      // Same route — just clear in-place.
       window.dispatchEvent(new Event("polyglot:reset-chat"));
     } else {
-      // Navigate to /chat. The new shell will mount fresh.
       router.push("/chat");
-      // Also fire reset in case a shell is already mounted (e.g. via parallel routes).
       window.dispatchEvent(new Event("polyglot:reset-chat"));
     }
   }
@@ -106,8 +110,10 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
   async function handleSignOut() {
     try {
       await signOut();
+      // Clear the SSR cookie too so middleware no longer treats us as authenticated.
+      await fetch("/api/auth/session", { method: "DELETE" }).catch(() => {});
       toast.success("Signed out.");
-      router.push("/");
+      router.replace("/login");
     } catch {
       toast.error("Could not sign out.");
     }
@@ -117,14 +123,14 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
     <aside className="h-full w-[260px] shrink-0 border-r flex flex-col bg-[rgb(var(--color-bg-elev))]">
       <div className="px-3 py-2.5 border-b flex items-center gap-2">
         <Link href="/" className="flex items-center gap-2 font-semibold text-[14px]">
-          <Logo />
-          <span>Polyglot</span>
+          <BrandLogo size={22} />
+          <BrandName />
         </Link>
         <div className="flex-1" />
         <button
           onClick={onCollapse}
           className="btn btn-ghost h-7 w-7 p-0"
-          title="Collapse sidebar (Ctrl+B)"
+          title="Collapse sidebar"
         >
           <PanelLeftClose className="h-3.5 w-3.5" />
         </button>
@@ -137,7 +143,6 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
         >
           <Plus className="h-4 w-4" />
           New chat
-          <span className="ml-auto text-[10px] opacity-50 font-mono">⌘⇧O</span>
         </button>
       </div>
 
@@ -169,27 +174,6 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" style={{ color: "rgb(var(--color-warning))" }} />
               <div className="min-w-0">
                 <div className="font-medium" style={{ color: "rgb(var(--color-fg))" }}>Couldn&apos;t load chats</div>
-                <div className="mt-1 leading-snug break-words">
-                  {(() => {
-                    const urlMatch = error.match(/https?:\/\/[^\s)]+/);
-                    if (!urlMatch) return error;
-                    const [before, after] = error.split(urlMatch[0]);
-                    return (
-                      <>
-                        {before}
-                        <a
-                          href={urlMatch[0]}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline text-[rgb(var(--color-accent))]"
-                        >
-                          create index ↗
-                        </a>
-                        {after}
-                      </>
-                    );
-                  })()}
-                </div>
                 <button
                   onClick={() => location.reload()}
                   className="btn btn-ghost h-6 px-1.5 text-[11px] -ml-1.5 mt-1.5"
@@ -233,6 +217,8 @@ export function ChatSidebar({ activeChatId, onCollapse }: Props) {
                       chat={c}
                       active={c.id === activeChatId}
                       isRenaming={renameTarget === c.id}
+                      isSavingRename={savingRename === c.id}
+                      isDeleting={deletingId === c.id}
                       isConfirmingDelete={confirmingDelete === c.id}
                       onStartRename={() => setRenameTarget(c.id)}
                       onCancelRename={() => setRenameTarget(null)}
@@ -264,6 +250,8 @@ function ChatRow({
   chat,
   active,
   isRenaming,
+  isSavingRename,
+  isDeleting,
   isConfirmingDelete,
   onStartRename,
   onCancelRename,
@@ -275,6 +263,8 @@ function ChatRow({
   chat: ChatMeta;
   active: boolean;
   isRenaming: boolean;
+  isSavingRename: boolean;
+  isDeleting: boolean;
   isConfirmingDelete: boolean;
   onStartRename: () => void;
   onCancelRename: () => void;
@@ -285,7 +275,6 @@ function ChatRow({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(chat.title);
-  const model = getModel(chat.modelLastUsed);
 
   useEffect(() => {
     if (isRenaming) {
@@ -297,12 +286,10 @@ function ChatRow({
     }
   }, [isRenaming, chat.title]);
 
-  // Task 35: when this row is in delete-confirm mode, dismiss on click-outside.
   useEffect(() => {
     if (!isConfirmingDelete) return;
     function onDoc(e: PointerEvent) {
       const target = e.target as HTMLElement;
-      // Keep open if user clicks inside the confirm popover (data-attribute used as a marker).
       if (target.closest("[data-delete-confirm]")) return;
       onCancelDelete();
     }
@@ -319,7 +306,6 @@ function ChatRow({
             "bg-[rgb(var(--color-bg-soft))] ring-1 ring-[rgb(var(--color-accent)/0.4)]"
           )}
         >
-          <MessageSquare className="h-3.5 w-3.5 shrink-0" />
           <input
             ref={inputRef}
             value={draft}
@@ -349,35 +335,40 @@ function ChatRow({
           "flex items-center gap-2 px-2.5 mx-1 rounded-md text-[13px] h-9 transition-colors",
           active
             ? "bg-[rgb(var(--color-bg-soft))] text-[rgb(var(--color-fg))]"
-            : "text-[rgb(var(--color-fg-muted))] hover:bg-[rgb(var(--color-bg-soft))] hover:text-[rgb(var(--color-fg))]"
+            : "text-[rgb(var(--color-fg-muted))] hover:bg-[rgb(var(--color-bg-soft))] hover:text-[rgb(var(--color-fg))]",
+          (isDeleting || isSavingRename) && "opacity-60 pointer-events-none"
         )}
       >
-        <ModelDot vendor={model?.vendor} />
         <span className="flex-1 truncate">{chat.title || "Untitled"}</span>
-        <span className="opacity-0 group-hover/item:opacity-100 flex items-center gap-0.5 transition-opacity">
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onStartRename();
-            }}
-            className="p-1 rounded hover:bg-[rgb(var(--color-border))]"
-            title="Rename"
-          >
-            <Pencil className="h-3 w-3" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onRequestDelete();
-            }}
-            className="p-1 rounded hover:bg-[rgb(var(--color-danger)/0.15)] hover:text-[rgb(var(--color-danger))]"
-            title="Delete"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        </span>
+        {(isSavingRename || isDeleting) && (
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+        )}
+        {!isSavingRename && !isDeleting && (
+          <span className="opacity-0 group-hover/item:opacity-100 flex items-center gap-0.5 transition-opacity">
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onStartRename();
+              }}
+              className="p-1 rounded hover:bg-[rgb(var(--color-border))]"
+              title="Rename"
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRequestDelete();
+              }}
+              className="p-1 rounded hover:bg-[rgb(var(--color-danger)/0.15)] hover:text-[rgb(var(--color-danger))]"
+              title="Delete"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </span>
+        )}
       </Link>
 
       {isConfirmingDelete && (
@@ -420,43 +411,5 @@ function ChatRow({
         </div>
       )}
     </li>
-  );
-}
-
-function ModelDot({ vendor }: { vendor?: string }) {
-  // Vendor-coded color so users can scan history at a glance.
-  const colors: Record<string, string> = {
-    DeepSeek: "rgb(70 95 255)",
-    "Moonshot AI": "rgb(255 130 60)",
-    "Z.ai": "rgb(60 200 130)",
-    Alibaba: "rgb(190 80 200)",
-    Meta: "rgb(60 130 255)",
-    Mistral: "rgb(255 105 50)",
-    OpenAI: "rgb(110 110 120)",
-    "Black Forest Labs": "rgb(0 0 0)",
-    MiniMax: "rgb(220 80 60)",
-  };
-  const c = vendor ? colors[vendor] : null;
-  return (
-    <span
-      className="block h-1.5 w-1.5 rounded-full shrink-0"
-      style={{ backgroundColor: c || "rgb(var(--color-fg-subtle))" }}
-      aria-hidden="true"
-    />
-  );
-}
-
-function Logo() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-      <defs>
-        <linearGradient id="lgs" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#465fff" />
-          <stop offset="1" stopColor="#a04dff" />
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#lgs)" />
-      <path d="M9 22V10h4l3 7 3-7h4v12h-3v-7l-2.6 6h-2.8L12 15v7z" fill="#fff" />
-    </svg>
   );
 }

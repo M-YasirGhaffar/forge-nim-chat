@@ -1,7 +1,7 @@
 "use client";
 
 import type { RefObject } from "react";
-import { ChevronDown, Sparkles, Eye, ImageIcon, Lock, Check, Brain, Loader2, AlertTriangle, Zap } from "lucide-react";
+import { ChevronDown, Sparkles, Eye, ImageIcon, Check, Brain, Loader2, AlertTriangle, Zap } from "lucide-react";
 import { Dropdown, DropdownLabel, DropdownSeparator } from "@/components/ui/dropdown";
 import { getModel, MODEL_REGISTRY } from "@/lib/models/registry";
 import { useAvailableModels, type ModelHealthState } from "@/lib/chat/use-models";
@@ -14,17 +14,12 @@ export interface Props {
   size?: "sm" | "md";
   filter?: "all" | "chat" | "image";
   disabled?: boolean;
-  disabledReason?: string;
   side?: "top" | "bottom";
   /**
    * Called when the user clicks the picker while it is `disabled` (locked chat). The parent
-   * is expected to surface the "Switch model — start a new chat" dialog.
+   * is expected to surface a small "Start a new chat?" popup.
    */
   onRequestSwitch?: () => void;
-  /**
-   * Optional ref attached to the trigger button. Used by the composer to programmatically
-   * open the picker via `Cmd/Ctrl + K`.
-   */
   triggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
@@ -34,7 +29,6 @@ export function ModelPicker({
   size = "md",
   filter = "all",
   disabled,
-  disabledReason,
   side = "top",
   onRequestSwitch,
   triggerRef,
@@ -42,10 +36,6 @@ export function ModelPicker({
   const current = getModel(modelId);
   const { entries, health, loading } = useAvailableModels();
 
-  // Group available entries by category. Fall back to the static registry while loading.
-  // Hide only explicitly-unavailable chat models — non-commercial entries (e.g. FLUX.1 Dev
-  // and FLUX.1 Kontext) are still free on the NIM trial, so we surface them and let the
-  // "non-commercial" pill on the row warn the user about license restrictions.
   const rawList = entries.length > 0 ? entries : MODEL_REGISTRY;
   const list = rawList.filter((m) => {
     if (m.endpoint === "chat" && health[m.id]?.state === "unavailable") return false;
@@ -58,31 +48,28 @@ export function ModelPicker({
   const showChat = filter !== "image";
   const showImage = filter !== "chat";
 
-  // When disabled (locked), render a static button — the dialog is opened by the parent on
-  // a separate "Switch model (new chat)" affordance, so we don't want the dropdown to open.
   if (disabled) {
     return (
       <button
         ref={triggerRef}
         type="button"
-        title={disabledReason || "Model is locked. Start a new chat to switch."}
         className={cn(
-          "btn btn-secondary opacity-70",
-          onRequestSwitch ? "cursor-pointer" : "cursor-not-allowed",
+          "btn btn-secondary opacity-70 cursor-pointer",
           size === "sm" ? "h-8 px-2 text-[12px]" : "h-9 px-3 text-[13px]"
         )}
-        onClick={(e) => {
-          if (onRequestSwitch) {
-            onRequestSwitch();
-          } else {
-            e.preventDefault();
-          }
-        }}
+        onClick={() => onRequestSwitch?.()}
       >
         <span className="flex items-center gap-2 max-w-[280px]">
-          <Lock className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+          {current?.category === "image" ? (
+            <ImageIcon className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+          ) : current?.category === "multimodal" ? (
+            <Eye className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5 text-[rgb(var(--color-fg-muted))]" />
+          )}
           <span className="truncate">{current?.displayName ?? "Choose a model"}</span>
         </span>
+        <ChevronDown className="h-3.5 w-3.5 opacity-30" />
       </button>
     );
   }
@@ -226,14 +213,6 @@ function ModelOption({
                 <Eye className="h-2.5 w-2.5" /> vision
               </span>
             )}
-            {!model.licenseCommercial && (
-              <span
-                className="pill text-[10px] py-0"
-                style={{ color: "rgb(var(--color-warning))", borderColor: "rgb(var(--color-warning) / 0.4)" }}
-              >
-                <Lock className="h-2.5 w-2.5" /> non-commercial
-              </span>
-            )}
           </div>
           <div className="text-xs mt-0.5" style={{ color: "rgb(var(--color-fg-muted))" }}>
             {model.tagline}
@@ -285,9 +264,8 @@ function HealthBadge({ state, latency }: { state: ModelHealthState; latency?: nu
     <span
       className="pill text-[10px] py-0"
       style={{ color: "rgb(var(--color-danger))", borderColor: "rgb(var(--color-danger) / 0.4)" }}
-      title="Unavailable on this tier"
+      title="Unavailable"
     >
-      <Lock className="h-2.5 w-2.5" />
       unavailable
     </span>
   );

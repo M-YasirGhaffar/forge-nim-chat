@@ -7,7 +7,6 @@ import { getModel } from "@/lib/models/registry";
 import { nimImageGenerate, NimError } from "@/lib/nim/client";
 import { getAdminStorage } from "@/lib/firebase/admin";
 import { ensureUser, persistAssistantMessage, persistUserMessage, createChat, getChat } from "@/lib/firebase/firestore";
-import { generatedImagePath } from "@/lib/storage/paths";
 import type { ChatMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -49,12 +48,29 @@ export async function POST(req: NextRequest) {
 
   const model = getModel(body.modelId);
   if (!model || model.endpoint !== "infer") {
-    return Response.json({ error: "unknown_model" }, { status: 400 });
+    console.warn("[/api/image] unknown_model:", {
+      modelId: body.modelId,
+      foundModel: !!model,
+      endpoint: model?.endpoint,
+    });
+    return Response.json(
+      {
+        error: "unknown_model",
+        modelId: body.modelId,
+        message: model
+          ? `Model "${body.modelId}" is a ${model.endpoint} model — pick an image model (FLUX) instead.`
+          : `Model "${body.modelId}" is not in the allowlist. Try refreshing the page.`,
+      },
+      { status: 400 }
+    );
   }
 
   await ensureUser(user.uid, { email: user.email, displayName: user.name, photoUrl: user.picture });
 
+  // Resolve chat id. DO NOT create the row yet — defer until image bytes land
+  // so a failed FLUX call doesn't pollute the sidebar with an empty chat.
   let chatId = body.chatId && body.chatId !== "new" ? body.chatId : null;
+  const wasExisting = !!chatId;
   if (chatId) {
     const existing = await getChat(chatId);
     if (!existing) chatId = null;
@@ -62,27 +78,28 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "forbidden" }, { status: 403 });
     }
   }
-  if (!chatId) chatId = await createChat(user.uid, model.id, body.prompt.slice(0, 60) || "New image");
 
   const userMessageId = nanoid(12);
   const assistantMessageId = nanoid(12);
 
-  // Persist the user prompt as a message with text part.
-  await persistUserMessage({
-    chatId,
-    uid: user.uid,
-    message: {
-      id: userMessageId,
-      role: "user",
-      parts: [{ type: "text", text: body.prompt }],
-      createdAt: Date.now(),
-    },
-  });
-
-  // Optional reference image (Kontext).
+  // Optional reference image (Kontext). Two cases:
+  //   - "data:image/png;example_id,N" — pass through verbatim (preview API only allows N∈{0,1,2}).
+  //   - any other value (legacy Storage path) — we can't fetch from Storage on Spark
+  //     tier, so reject with a clear error.
   let referenceImage: string | undefined;
   if (body.referenceImageStoragePath) {
-    referenceImage = await downloadAsBase64(body.referenceImageStoragePath);
+    if (body.referenceImageStoragePath.startsWith("data:image/")) {
+      referenceImage = body.referenceImageStoragePath;
+    } else {
+      return Response.json(
+        {
+          error: "reference_unavailable",
+          message: "User-uploaded reference images aren't available on the free tier. FLUX Kontext only accepts the 3 sample images on NIM's preview API.",
+          modelId: model.id,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   let result;
@@ -97,22 +114,38 @@ export async function POST(req: NextRequest) {
       seed: body.seed,
     });
   } catch (e) {
-    const msg = e instanceof NimError ? `${e.status}: ${e.body.slice(0, 200)}` : (e as Error).message;
-    return Response.json({ error: "generation_failed", message: msg }, { status: 502 });
+    const detail = e instanceof NimError ? `${e.status}: ${e.body.slice(0, 400)}` : (e as Error).message;
+    console.error("[/api/image] generation_failed:", { model: model.id, detail });
+    return Response.json(
+      { error: "generation_failed", message: detail, modelId: model.id },
+      { status: 502 }
+    );
   }
 
-  // Upload the PNG to Firebase Storage.
-  const buffer = Buffer.from(result.base64, "base64");
-  const path = generatedImagePath(user.uid, chatId, assistantMessageId);
-  const file = getAdminStorage().bucket().file(path);
-  await file.save(buffer, {
-    metadata: { contentType: "image/png", cacheControl: "public, max-age=31536000" },
-    resumable: false,
-  });
-  const [downloadUrl] = await file.getSignedUrl({
-    action: "read",
-    expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
+  // Free-tier path: skip Firebase Storage (Blaze-only as of Oct 2024) and inline the
+  // JPEG as a data URL persisted directly in the Firestore message. FLUX outputs are
+  // typically 80–400 KB — well under Firestore's 1 MB doc cap. If a future model
+  // produces something larger we'll see "Document size exceeds limit" from Firestore
+  // and can fall back to a 3rd-party host.
+  const ext = result.mimeType === "image/jpeg" ? "jpg" : "png";
+  const dataUrl = `data:${result.mimeType};base64,${result.base64}`;
+  const approxBytes = Math.ceil((result.base64.length * 3) / 4);
+  if (approxBytes > 950_000) {
+    return Response.json(
+      {
+        error: "image_too_large",
+        message: `Generated image is ${(approxBytes / 1024).toFixed(0)} KB — exceeds free-tier inline limit. Try a smaller aspect ratio or upgrade Firebase to Blaze for Storage.`,
+        modelId: model.id,
+      },
+      { status: 413 }
+    );
+  }
+  const downloadUrl = dataUrl;
+  // Storage path is purely metadata at this point — kept for compatibility with the
+  // ChatMessage type so older code paths still typecheck. It does not refer to a
+  // real Cloud Storage object.
+  const storagePath = `inline://${user.uid}/${chatId}/${assistantMessageId}.${ext}`;
+  void getAdminStorage; // intentionally unused on free tier
 
   const assistantMessage: ChatMessage = {
     id: assistantMessageId,
@@ -120,10 +153,10 @@ export async function POST(req: NextRequest) {
     parts: [
       {
         type: "image",
-        storagePath: path,
+        storagePath,
         downloadUrl,
-        mimeType: "image/png",
-        fileName: `${assistantMessageId}.png`,
+        mimeType: result.mimeType,
+        fileName: `${assistantMessageId}.${ext}`,
       },
       { type: "text", text: `Generated by ${model.displayName}.` },
     ],
@@ -134,33 +167,55 @@ export async function POST(req: NextRequest) {
     createdAt: Date.now() + 1,
   };
 
-  await persistAssistantMessage({
-    chatId,
-    uid: user.uid,
-    message: assistantMessage,
-    artifacts: [],
-    modelId: model.id,
-    isFirstTurn: true,
-    newTitle: body.prompt.slice(0, 60) || undefined,
-  });
+  // Generation succeeded — NOW create the chat row (if needed) and persist both
+  // the user prompt and the assistant message. If chat creation/persist fails we
+  // still return the image so the user sees it; refreshing won't show it but the
+  // bytes won't be lost on this turn.
+  try {
+    if (!chatId) {
+      chatId = await createChat(user.uid, model.id, body.prompt.slice(0, 60) || "New image");
+    }
+    await persistUserMessage({
+      chatId,
+      uid: user.uid,
+      message: {
+        id: userMessageId,
+        role: "user",
+        parts: [{ type: "text", text: body.prompt }],
+        createdAt: Date.now(),
+      },
+    });
+    await persistAssistantMessage({
+      chatId,
+      uid: user.uid,
+      message: assistantMessage,
+      artifacts: [],
+      modelId: model.id,
+      isFirstTurn: !wasExisting,
+      newTitle: body.prompt.slice(0, 60) || undefined,
+    });
+  } catch (e) {
+    const detail = (e as Error).message || String(e);
+    console.error("[/api/image] persist_failed:", detail);
+    return Response.json({
+      chatId,
+      userMessageId,
+      assistantMessageId,
+      imageUrl: downloadUrl,
+      storagePath,
+      seed: result.seed,
+      licenseCommercial: model.licenseCommercial,
+      warning: `Generated image but couldn't persist chat: ${detail}`,
+    });
+  }
 
   return Response.json({
     chatId,
     userMessageId,
     assistantMessageId,
     imageUrl: downloadUrl,
-    storagePath: path,
+    storagePath,
     seed: result.seed,
     licenseCommercial: model.licenseCommercial,
   });
-}
-
-async function downloadAsBase64(storagePath: string): Promise<string> {
-  const path = storagePath.replace(/^gs:\/\/[^/]+\//, "");
-  const [buffer] = await getAdminStorage().bucket().file(path).download();
-  // Heuristic: detect mime from magic bytes; default png.
-  const header = buffer.subarray(0, 4);
-  let mime = "image/png";
-  if (header[0] === 0xff && header[1] === 0xd8) mime = "image/jpeg";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
 }

@@ -586,11 +586,12 @@ export const ALLOWED_MODELS: Record<string, Capability> = {
 };
 
 /**
- * Build a ModelEntry from an id by looking it up in ALLOWED_MODELS.
- * Returns null if the id isn't in our allowlist (i.e., we don't surface it).
+ * Build a ModelEntry from an id. Falls back to inferred defaults when the id
+ * isn't in our hint table — this lets newly-launched NIM models flow through
+ * without code edits.
  */
 export function buildEntry(id: string): ModelEntry | null {
-  const c = ALLOWED_MODELS[id];
+  const c = ALLOWED_MODELS[id] ?? inferCapability(id);
   if (!c) return null;
   return { id, ...c };
 }
@@ -605,4 +606,98 @@ export function allAllowedIds(): string[] {
 
 export function imageModelIds(): string[] {
   return Object.keys(ALLOWED_MODELS).filter((id) => ALLOWED_MODELS[id].endpoint === "infer");
+}
+
+/**
+ * Best-effort capability inference for ids we haven't hand-curated. Pattern-matches
+ * vendor/family from the id segments and falls back to safe defaults — the model
+ * works (NIM enforces its own limits), the UI just won't have a custom tagline.
+ */
+function inferCapability(id: string): Capability | null {
+  if (!id || !id.includes("/")) return null;
+  const [vendor, name] = id.split("/", 2);
+  const lower = id.toLowerCase();
+  const vendorLabel = humanizeVendor(vendor);
+  const display = humanizeName(name);
+
+  // FLUX / image generation
+  if (lower.includes("flux") || lower.includes("schnell") || lower.includes("kontext")) {
+    return {
+      vendor: vendorLabel,
+      displayName: display,
+      category: "image",
+      kind: "image",
+      contextWindow: 0,
+      maxOutput: 0,
+      supportsImages: lower.includes("kontext"),
+      supportsVideo: false,
+      supportsTools: false,
+      supportsThinking: false,
+      thinkingModes: [],
+      paramHint: "image generation",
+      paramCountB: 12,
+      license: "Apache 2.0",
+      licenseCommercial: !lower.includes("dev") && !lower.includes("kontext"),
+      tagline: "Image generation.",
+      endpoint: "infer",
+    };
+  }
+
+  // VLMs (vision/multimodal hints)
+  const isVLM = lower.includes("vlm") || lower.includes("vision") || lower.includes("vl-");
+  // Reasoning hints
+  const isThinking = lower.includes("thinking") || lower.includes("reasoning") || lower.includes("r1");
+
+  return {
+    vendor: vendorLabel,
+    displayName: display,
+    category: isVLM ? "multimodal" : "reasoning",
+    kind: isVLM ? "vlm" : "llm",
+    contextWindow: 128_000,
+    maxOutput: 8_192,
+    supportsImages: isVLM,
+    supportsVideo: false,
+    supportsTools: true,
+    supportsThinking: isThinking,
+    thinkingModes: isThinking ? ["off", "high"] : [],
+    defaultThinking: isThinking ? "off" : undefined,
+    paramHint: "open weights",
+    paramCountB: 0,
+    license: "See vendor",
+    licenseCommercial: true,
+    tagline: `${vendorLabel} model.`,
+    endpoint: "chat",
+    recommendedTemperature: 0.7,
+  };
+}
+
+function humanizeVendor(slug: string): string {
+  const map: Record<string, string> = {
+    "deepseek-ai": "DeepSeek",
+    moonshotai: "Moonshot AI",
+    "z-ai": "Z.ai",
+    qwen: "Alibaba",
+    meta: "Meta",
+    mistralai: "Mistral",
+    openai: "OpenAI",
+    minimaxai: "MiniMax",
+    "black-forest-labs": "Black Forest Labs",
+    nvidia: "NVIDIA",
+    google: "Google",
+    microsoft: "Microsoft",
+  };
+  return map[slug] ?? slug.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function humanizeName(slug: string): string {
+  return slug
+    .replace(/[-_]/g, " ")
+    .replace(/\b(\d+)b\b/gi, "$1B")
+    .replace(/\b(\d+)k\b/gi, "$1K")
+    .replace(/instruct\b/gi, "Instruct")
+    .replace(/chat\b/gi, "Chat")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => (/^v?\d/.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ");
 }

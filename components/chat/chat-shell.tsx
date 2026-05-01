@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { nanoid } from "nanoid";
-import { PanelLeft, PanelRight, Pencil, Code, Brain, Image as ImageIcon, X, FlaskConical, Lock, ArrowDown } from "lucide-react";
+import { PanelLeft, PanelRight, Pencil, Code, Brain, Image as ImageIcon, X, FlaskConical, ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth, authedFetch } from "@/components/auth-provider";
 import { ChatSidebar } from "./sidebar";
@@ -59,7 +59,13 @@ export function ChatShell({
   const router = useRouter();
   const { user, idToken, loading } = useAuth();
 
-  const [modelId, setModelId] = useState(initialModelId || DEFAULT_MODEL_ID);
+  // If `initialModelId` was saved by an older code version under a since-renamed id,
+  // fall back to the default — otherwise getModel() would later return undefined and
+  // every render of the picker / composer would explode on `model.category`.
+  const [modelId, setModelId] = useState(() => {
+    if (initialModelId && getModel(initialModelId)) return initialModelId;
+    return DEFAULT_MODEL_ID;
+  });
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(initialThinking || "high");
   const [attachments, setAttachments] = useState<ExtendedAttachment[]>([]);
   // pendingFiles is keyed by storagePath of the matching pending chip so removals stay in sync.
@@ -122,31 +128,7 @@ export function ChatShell({
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [steps, setSteps] = useState(4);
 
-  // Switch-model dialog state.
-  const [pendingSwitch, setPendingSwitch] = useState<string | null>(null);
-
-  // On a fresh /chat mount, honor a "carry" hint left by SwitchModelDialog (start a new
-  // chat with the same first prompt as the previous one but a different model).
-  useEffect(() => {
-    if (initialChatId) return;
-    try {
-      const carryRaw = window.localStorage.getItem("polyglot:newChatCarry");
-      if (carryRaw) {
-        window.localStorage.removeItem("polyglot:newChatCarry");
-        const carry = JSON.parse(carryRaw) as { modelId?: string; seedText?: string };
-        if (carry.modelId) setModelId(carry.modelId);
-        if (carry.seedText) {
-          // Push to composer via the same custom-event the suggestion cards use.
-          setTimeout(() => {
-            window.dispatchEvent(new CustomEvent("polyglot:fill-composer", { detail: carry.seedText }));
-          }, 80);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const [pendingSwitch, setPendingSwitch] = useState<boolean>(false);
 
   const stream = useChatStream({ initialChatId, initialMessages, initialArtifacts, initialTitle });
 
@@ -158,16 +140,14 @@ export function ChatShell({
   function handleModelChange(newId: string) {
     if (newId === modelId) return;
     if (modelLocked) {
-      setPendingSwitch(newId);
+      setPendingSwitch(true);
       return;
     }
     setModelId(newId);
   }
 
-  // Task 28: the composer "switch" affordance opens a picker so the user can choose any
-  // model rather than us guessing the alternative.
   const handleRequestSwitch = useCallback(() => {
-    setPendingSwitch("__pick__");
+    setPendingSwitch(true);
   }, []);
 
   // Regenerate: resend the most recent user message + drop the current assistant turn.
@@ -346,29 +326,6 @@ export function ChatShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attachments, referenceImageUrl, revokeObjectUrl]);
 
-  // Keyboard shortcuts.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.key === "b") {
-        e.preventDefault();
-        setShowSidebar((s) => !s);
-      } else if (meta && e.shiftKey && (e.key === "o" || e.key === "O")) {
-        e.preventDefault();
-        // Soft reset — same as sidebar New chat.
-        if (window.location.pathname === "/chat") {
-          window.dispatchEvent(new Event("polyglot:reset-chat"));
-        } else {
-          router.push("/chat");
-          window.dispatchEvent(new Event("polyglot:reset-chat"));
-        }
-      } else if (e.key === "Escape" && showArtifactPanel) {
-        setShowArtifactPanel(false);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [router, showArtifactPanel]);
 
   const model = getModel(modelId)!;
   const isImageMode = model.category === "image";
@@ -498,7 +455,11 @@ export function ChatShell({
       toast.error("Sign in expired. Please refresh.");
       return;
     }
-    if (isImageMode) {
+    // Route by both category and endpoint to catch stale-state mismatches: for FLUX
+    // models the two always agree, but checking both means a cosmetic drift in either
+    // field still routes the request to /api/image instead of /api/chat (which would
+    // 400 with "unknown_model" because /api/chat only accepts endpoint:"chat" entries).
+    if (isImageMode || model.endpoint === "infer") {
       await handleImageGeneration(text);
       return;
     }
@@ -543,10 +504,22 @@ export function ChatShell({
       createdAt: Date.now(),
     };
     const placeholderId = `tmp-asst-${Date.now() + 1}`;
+    // Use a sentinel `placeholder://` URL on a real image part. MessageView detects
+    // this and renders an aspect-correct shimmer card at the chosen dimensions
+    // instead of an `<img>`. Once the API returns, we swap the part in place and
+    // the shimmer fades out → the real image fades in.
     const placeholderMessage: ChatMessage = {
       id: placeholderId,
       role: "assistant",
-      parts: [{ type: "text", text: `Generating image with **${model.displayName}**…` }],
+      parts: [
+        {
+          type: "image",
+          storagePath: `placeholder://${aspectRatio}`,
+          downloadUrl: `placeholder://${aspectRatio}`,
+          mimeType: "image/jpeg",
+          fileName: `Generating with ${model.displayName}…`,
+        },
+      ],
       model: model.id,
       createdAt: Date.now() + 1,
     };
@@ -591,8 +564,8 @@ export function ChatShell({
                     type: "image",
                     storagePath: data.storagePath,
                     downloadUrl: data.imageUrl,
-                    mimeType: "image/png",
-                    fileName: `${data.assistantMessageId}.png`,
+                    mimeType: data.imageUrl?.startsWith("data:image/jpeg") ? "image/jpeg" : "image/png",
+                    fileName: `${data.assistantMessageId}.${data.imageUrl?.startsWith("data:image/jpeg") ? "jpg" : "png"}`,
                   },
                   {
                     type: "text",
@@ -620,12 +593,17 @@ export function ChatShell({
     }
   }
 
-  if (loading || !user) {
+  if (loading) {
     return (
       <div className="h-screen grid place-items-center">
-        <div className="shimmer h-3 w-32 rounded" />
+        <div className="shimmer h-2 w-32 rounded" />
       </div>
     );
+  }
+  if (!user) {
+    // Loading is complete and there's no user → middleware/effect is redirecting to /login.
+    // Render nothing so the user doesn't see a shimmer that says "Signing you in" during sign-OUT.
+    return null;
   }
 
   const activeArtifact = activeArtifactId ? stream.artifacts.get(activeArtifactId) || null : null;
@@ -704,13 +682,12 @@ export function ChatShell({
               <button
                 onClick={() => setShowSidebar(true)}
                 className="btn btn-ghost h-8 w-8 p-0"
-                title="Open sidebar (Ctrl+B)"
+                title="Open sidebar"
               >
                 <PanelLeft className="h-4 w-4" />
               </button>
             )}
 
-            {/* Task 57: per-chat model badge once a conversation has started. */}
             {!isEmpty && model && (
               <div className="inline-flex items-center gap-1.5 rounded-full border bg-[rgb(var(--color-bg-elev))] px-2.5 py-1 text-[11.5px]" style={{ color: "rgb(var(--color-fg-muted))" }}>
                 <span
@@ -719,12 +696,6 @@ export function ChatShell({
                   aria-hidden="true"
                 />
                 <span className="font-medium" style={{ color: "rgb(var(--color-fg))" }}>{model.displayName}</span>
-                {modelLocked && (
-                  <span className="inline-flex items-center gap-0.5 ml-0.5 text-[10px]" title="Model is locked for this chat">
-                    <Lock className="h-2.5 w-2.5" />
-                    locked
-                  </span>
-                )}
               </div>
             )}
 
@@ -883,9 +854,7 @@ export function ChatShell({
       {pendingSwitch && (
         <SwitchModelDialog
           fromModelId={modelId}
-          toModelId={pendingSwitch}
-          lastUserText={[...stream.messages].reverse().find((m) => m.role === "user")?.parts.find((p) => p.type === "text")?.text || ""}
-          onCancel={() => setPendingSwitch(null)}
+          onCancel={() => setPendingSwitch(false)}
         />
       )}
     </div>

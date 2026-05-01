@@ -4,16 +4,12 @@ import type { ModelEntry } from "@/lib/types";
 import { nimListModels } from "@/lib/nim/client";
 
 /**
- * Source of truth for "what models can the user pick right now".
- *
- * Strategy:
- *  1. Fetch NIM /v1/models (5-min cache) to see what's actually live.
- *  2. Intersect with our ALLOWED_MODELS allowlist (so deprecations vanish automatically,
- *     and a new flagship from a known vendor only appears once we add it to the allowlist).
- *  3. Always include FLUX entries (they live on a different endpoint — /genai/.../infer —
- *     so they don't show up in /v1/models). Their availability is verified by the
- *     health-pinger separately.
- *  4. Fallback to allowlist-as-static-list if NIM is down so the UI never breaks.
+ * What can the user pick right now?
+ *  1. NIM /v1/models is the live truth — every id it lists is surfaced.
+ *  2. Image models (FLUX) don't appear in /v1/models, so we always append the
+ *     allowlisted infer-endpoint entries on top.
+ *  3. If NIM is unreachable, fall back to the static hint allowlist so the UI
+ *     never breaks during a brief upstream outage.
  */
 
 interface CacheState {
@@ -35,9 +31,8 @@ async function ensureCache(force = false): Promise<CacheState> {
     }
     throw new Error("nimListModels returned null");
   } catch (e) {
-    // Fallback: assume the entire allowlist is available so UX stays usable.
     cache = {
-      ids: new Set(allAllowedIds()),
+      ids: new Set(allAllowedIds().filter((id) => ALLOWED_MODELS[id].endpoint === "chat")),
       fetchedAt: Date.now(),
       lastError: e instanceof Error ? e.message : String(e),
     };
@@ -49,18 +44,25 @@ export async function listAvailableEntries(): Promise<{ entries: ModelEntry[]; u
   const c = await ensureCache();
   const entries: ModelEntry[] = [];
 
-  // Chat models: must be in both allowlist and NIM /v1/models.
-  for (const id of allAllowedIds()) {
-    if (ALLOWED_MODELS[id].endpoint === "chat" && c.ids.has(id)) {
-      const e = buildEntry(id);
-      if (e) entries.push(e);
-    }
+  // Surface every id NIM exposes. Capabilities come from the hint table when
+  // available, otherwise inferred from the id (so newly-launched models flow
+  // through without code edits).
+  for (const id of c.ids) {
+    const e = buildEntry(id);
+    if (e && e.endpoint === "chat") entries.push(e);
   }
-  // Image models: always include allowlisted ones (NIM /v1/models doesn't list them).
+
+  // FLUX-style image endpoints never show up in /v1/models — append from the
+  // allowlist directly.
   for (const id of imageModelIds()) {
     const e = buildEntry(id);
     if (e) entries.push(e);
   }
+
+  // Stable order: chat reasoning → multimodal → image, then by displayName.
+  const order = (m: ModelEntry) =>
+    m.category === "reasoning" ? 0 : m.category === "multimodal" ? 1 : 2;
+  entries.sort((a, b) => order(a) - order(b) || a.displayName.localeCompare(b.displayName));
 
   return { entries, usingFallback: !!c.lastError, error: c.lastError };
 }
@@ -70,9 +72,5 @@ export async function refreshDiscovery() {
 }
 
 export function defaultModelId(): string {
-  // Pick the fastest-known available model as the default.
-  // Order of preference:
-  return (
-    "deepseek-ai/deepseek-v4-flash"
-  );
+  return "deepseek-ai/deepseek-v4-flash";
 }

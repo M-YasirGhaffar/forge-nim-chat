@@ -10,7 +10,6 @@ import {
   FileText,
   Film,
   Loader2,
-  Lock,
   RotateCcw,
 } from "lucide-react";
 import { Segmented } from "@/components/ui/segmented";
@@ -107,14 +106,32 @@ export function Composer(props: Props) {
   const pickerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  // Re-hydrate when the chatId changes (e.g. user clicks a different chat in the sidebar).
+  // Re-hydrate when the chatId changes. Two transitions to handle:
+  //
+  //  (a) User clicks a different chat in the sidebar — load that chat's draft.
+  //  (b) Server assigns a real id mid-message (chatId: null → "abc123"). If the
+  //      user is typing right now, we MUST keep their text — overwriting it with
+  //      whatever's under the new key (almost always empty) is the bug ChatGPT
+  //      had on launch and gets called out as "the input cleared while I was typing".
+  //
+  // Heuristic: if the current value is non-empty, migrate it to the new key and
+  // keep it visible; if the current value is empty, load whatever's stored.
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(draftKey(chatId)) || "";
-      setValue(stored);
-    } catch {
-      // ignore
-    }
+    setValue((current) => {
+      if (current) {
+        try {
+          window.localStorage.setItem(draftKey(chatId), current);
+        } catch {
+          // ignore quota
+        }
+        return current;
+      }
+      try {
+        return window.localStorage.getItem(draftKey(chatId)) || "";
+      } catch {
+        return "";
+      }
+    });
   }, [chatId]);
 
   // Persist on change — keyed per chat.
@@ -165,20 +182,6 @@ export function Composer(props: Props) {
     return () => window.removeEventListener("polyglot:fill-composer", onFill);
   }, []);
 
-  // Cmd/Ctrl + K → open the model picker. No-op while in image mode or while the chat is
-  // locked (the picker can't be opened in either case).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const meta = e.metaKey || e.ctrlKey;
-      if (!meta || e.key.toLowerCase() !== "k") return;
-      if (isImage || modelLocked) return;
-      e.preventDefault();
-      taRef.current?.blur();
-      pickerTriggerRef.current?.click();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isImage, modelLocked]);
 
   async function pickFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -286,28 +289,29 @@ export function Composer(props: Props) {
         />
 
         <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1 flex-wrap">
-          {/* Left zone: attach */}
-          <Tooltip label={isImage ? "Add reference image" : "Attach files"}>
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              className={cn(
-                "btn btn-ghost h-9 w-9 p-0 rounded-full",
-                !(supportsImages || supportsVideo || isImage) && "opacity-30 pointer-events-none"
-              )}
-              disabled={isStreaming || uploading || !(supportsImages || supportsVideo || isImage)}
-            >
-              <Plus className="h-4 w-4" />
-            </button>
-          </Tooltip>
-          <input
-            type="file"
-            ref={fileRef}
-            multiple={!isImage}
-            accept={accept}
-            className="hidden"
-            onChange={(e) => pickFiles(e.target.files)}
-          />
+          {/* Left zone: attach (only rendered when this model accepts attachments) */}
+          {(supportsImages || supportsVideo || isImage) && (
+            <>
+              <Tooltip label={isImage ? "Add reference image" : "Attach files"}>
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  className="btn btn-ghost h-9 w-9 p-0 rounded-full"
+                  disabled={isStreaming || uploading}
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </Tooltip>
+              <input
+                type="file"
+                ref={fileRef}
+                multiple={!isImage}
+                accept={accept}
+                className="hidden"
+                onChange={(e) => pickFiles(e.target.files)}
+              />
+            </>
+          )}
 
           {/* Center zone: model + thinking. Always show all categories so users can switch
               between text and image models in a fresh chat without hunting for a hidden picker. */}
@@ -317,31 +321,10 @@ export function Composer(props: Props) {
             size="sm"
             filter="all"
             disabled={modelLocked}
-            disabledReason="Model is locked for this chat. Start a new chat to switch."
             side="top"
             onRequestSwitch={onRequestSwitch}
             triggerRef={pickerTriggerRef}
           />
-          {modelLocked && onRequestSwitch && (
-            <button
-              type="button"
-              onClick={onRequestSwitch}
-              className="pill text-[10px] py-0 hover:bg-[rgb(var(--color-bg-soft))]"
-              title="Start a new chat with a different model"
-              style={{ color: "rgb(var(--color-fg-muted))" }}
-            >
-              <Lock className="h-2.5 w-2.5" /> Switch (new chat)
-            </button>
-          )}
-          {modelLocked && !onRequestSwitch && (
-            <span
-              className="pill text-[10px] py-0"
-              title="Model is locked for this chat. Start a new chat to switch."
-              style={{ color: "rgb(var(--color-fg-muted))" }}
-            >
-              <Lock className="h-2.5 w-2.5" /> locked
-            </span>
-          )}
           {!isImage && model.thinkingModes.length > 1 && (
             <ThinkingControl
               modes={model.thinkingModes}
@@ -399,7 +382,7 @@ export function Composer(props: Props) {
         </div>
       </div>
       <div className="mt-2 text-center text-[10.5px]" style={{ color: "rgb(var(--color-fg-subtle))" }}>
-        Polyglot can make mistakes. Verify important info. NIM trial · non-production use.
+        Models can make mistakes. Verify important info.
       </div>
     </div>
   );

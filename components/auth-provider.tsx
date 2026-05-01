@@ -42,14 +42,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const auth = getClientAuth();
+
+    // Synchronously hydrate from `currentUser` so navigation right after sign-in doesn't
+    // leave us stuck on the loading shimmer while waiting for the listener to fire.
+    if (auth.currentUser) {
+      setUser(auth.currentUser);
+      setLoading(false);
+      auth.currentUser
+        .getIdToken()
+        .then((tok) => {
+          setIdToken(tok);
+          void syncSessionCookie(tok);
+        })
+        .catch(() => {});
+    }
+
+    // Hard fallback: never let the UI sit on the auth-loading shimmer for more than 4s.
+    // If Firebase's listener hasn't fired by then (extension storage blocked, network
+    // anomaly, etc.) we declare auth resolved as "anonymous" and let the gate redirect
+    // to /login. The listener still updates state if it fires later.
+    const fallback = setTimeout(() => {
+      setLoading((cur) => (cur ? false : cur));
+    }, 4000);
+
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       setLoading(false);
       if (u) {
-        const tok = await u.getIdToken();
-        setIdToken(tok);
-        // Sync session cookie so SSR pages see the user.
-        await syncSessionCookie(tok);
+        try {
+          const tok = await u.getIdToken();
+          setIdToken(tok);
+          await syncSessionCookie(tok);
+        } catch {
+          /* token fetch can fail offline — listener will retry */
+        }
       } else {
         setIdToken(null);
         await fetch("/api/auth/session", { method: "DELETE" }).catch(() => {});
@@ -68,6 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, 50 * 60 * 1000);
 
     return () => {
+      clearTimeout(fallback);
       unsub();
       clearInterval(interval);
     };

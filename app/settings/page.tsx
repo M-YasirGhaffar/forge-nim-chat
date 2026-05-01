@@ -7,7 +7,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Settings — Polyglot" };
+export const metadata = { title: "Settings — Forge" };
 
 export default async function SettingsPage() {
   const user = await getSessionUser().catch(() => null);
@@ -76,21 +76,6 @@ export default async function SettingsPage() {
               <div className="text-xs mt-0.5" style={{ color: "rgb(var(--color-fg-muted))" }}>tokens used</div>
             </div>
           </div>
-          <p className="mt-3 text-xs" style={{ color: "rgb(var(--color-fg-subtle))" }}>
-            Per-user limits: 10/min · 200/day · 4,000/month chat messages; 30/day FLUX images.
-          </p>
-        </section>
-
-        <section className="card p-6">
-          <h2 className="text-lg font-semibold tracking-tight">Trial &amp; terms</h2>
-          <p className="text-sm" style={{ color: "rgb(var(--color-fg-muted))" }}>
-            Polyglot uses NVIDIA NIM&apos;s hosted free trial as its inference backend. Per the
-            NIM Trial Terms of Service, this app is for{" "}
-            <strong>internal evaluation, development, or test &mdash; non-production use</strong>.
-          </p>
-          <Link href="/about#nim-terms" className="text-sm underline mt-2 inline-block">
-            Read more →
-          </Link>
         </section>
       </div>
     </main>

@@ -115,10 +115,9 @@ export function getCachedHealth(id: string): HealthEntry | null {
 }
 
 export async function batchHealth(ids: string[]): Promise<Record<string, HealthEntry>> {
-  // Single-flight to be polite to the trial 40 RPM cap.
   const out: Record<string, HealthEntry> = {};
   const queue = [...ids];
-  const workers = Math.min(1, queue.length);
+  const workers = Math.min(8, queue.length);
   await Promise.all(
     Array.from({ length: workers }, async () => {
       while (queue.length) {
@@ -132,4 +131,22 @@ export async function batchHealth(ids: string[]): Promise<Record<string, HealthE
     })
   );
   return out;
+}
+
+/**
+ * Fire-and-forget refresh of stale entries. Returns immediately. The next request that
+ * reads getCachedHealth() will see fresher values once probes complete.
+ */
+let backgroundRefreshing = false;
+export function kickBackgroundRefresh(ids: string[]): void {
+  if (backgroundRefreshing) return;
+  const stale = ids.filter((id) => {
+    const c = cache.get(id);
+    return !c || Date.now() - c.checkedAt > TTL_MS;
+  });
+  if (stale.length === 0) return;
+  backgroundRefreshing = true;
+  void batchHealth(stale).finally(() => {
+    backgroundRefreshing = false;
+  });
 }

@@ -97,7 +97,10 @@ async function nimFetch(path: string, init: RequestInit, attempt = 0): Promise<R
   return res;
 }
 
-export async function nimChatCompletionsStream(req: NimChatRequest): Promise<Response> {
+export async function nimChatCompletionsStream(
+  req: NimChatRequest,
+  signal?: AbortSignal,
+): Promise<Response> {
   const body = JSON.stringify({
     ...req,
     stream: true,
@@ -107,6 +110,7 @@ export async function nimChatCompletionsStream(req: NimChatRequest): Promise<Res
     method: "POST",
     body,
     headers: { Accept: "text/event-stream" },
+    signal,
   });
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");
@@ -145,78 +149,94 @@ export async function nimChatCompletions(req: NimChatRequest): Promise<{
   };
 }
 
+/**
+ * Returned image format. NIM hosted FLUX endpoints reply with JPEG bytes wrapped in
+ * `{ artifacts: [{ base64, finishReason, seed }] }`. We default the mime to JPEG
+ * because the magic bytes confirm the upstream is JPEG, not PNG (despite the
+ * `image/png` content type the model card sometimes mentions).
+ */
 export async function nimImageGenerate(req: NimImageRequest): Promise<{
   base64: string;
+  mimeType: "image/jpeg" | "image/png";
   seed?: number;
 }> {
-  // FLUX endpoints on NIM accept the OpenAI-style body but live at /infer or /images/generations
-  // depending on the model. Try /chat/completions first for FLUX (NIM has been migrating), then
-  // fall back to model-specific paths.
-  const candidates = [
-    `/genai/${encodeURIComponent(req.model)}/infer`,
-    `/${encodeURIComponent(req.model)}/infer`,
-    "/images/generations",
-  ];
+  const aiBase = process.env.NIM_IMAGE_BASE_URL || "https://ai.api.nvidia.com/v1";
+  const isSchnell = req.model.includes("schnell");
+  const isDev = req.model.includes("flux.1-dev") || /\bdev\b/.test(req.model) && !req.model.includes("kontext");
+  const isKontext = req.model.includes("kontext");
 
-  let lastErr: NimError | null = null;
-  for (const path of candidates) {
-    const body =
-      path === "/images/generations"
-        ? JSON.stringify({
-            model: req.model,
-            prompt: req.prompt ?? req.text,
-            n: 1,
-            size: openAiSize(req.aspect_ratio),
-            response_format: "b64_json",
-          })
-        : JSON.stringify({
-            text: req.prompt ?? req.text,
-            prompt: req.prompt ?? req.text,
-            ...(req.image ? { image: req.image } : {}),
-            ...(req.steps != null ? { steps: req.steps } : {}),
-            ...(req.cfg_scale != null ? { cfg_scale: req.cfg_scale } : {}),
-            ...(req.aspect_ratio ? { aspect_ratio: req.aspect_ratio } : {}),
-            ...(req.seed != null ? { seed: req.seed } : {}),
-          });
-    const res = await nimFetch(path, { method: "POST", body });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      lastErr = new NimError(res.status, text);
-      // 404 → try next candidate; other errors → bail.
-      if (res.status === 404) continue;
-      throw lastErr;
-    }
-    const json = (await res.json()) as NimImageResponse;
-    const b64 =
-      json.artifacts?.[0]?.base64 ||
-      json.image ||
-      json.data?.[0]?.b64_json ||
-      "";
-    if (!b64) {
-      lastErr = new NimError(500, `No image in response from ${path}`);
-      continue;
-    }
-    return { base64: b64, seed: json.artifacts?.[0]?.seed };
+  // Width/height per the published per-model enums.
+  const { width, height } = aspectToWH(req.aspect_ratio, isKontext);
+
+  const prompt = (req.prompt ?? req.text ?? "").slice(0, 10_000);
+  const body: Record<string, unknown> = { prompt, width, height };
+  if (req.seed != null) body.seed = Math.max(0, Math.trunc(req.seed));
+
+  if (isSchnell) {
+    // schnell: distilled; 1–4 steps; cfg_scale must be 0 (omit → default 0).
+    if (req.steps != null) body.steps = clamp(req.steps, 1, 4);
+  } else if (isKontext) {
+    // Kontext on the hosted preview *only* accepts pre-canned reference images
+    // referenced via `data:image/png;example_id,N` where N ∈ {0,1,2}. User-uploaded
+    // base64 reference images are NOT supported on the preview endpoint. To keep the
+    // route usable we accept whichever the caller passed; if it's a normal data URL
+    // NIM will reject with 4xx and we surface that error to the UI.
+    if (req.image) body.image = req.image;
+    if (req.steps != null) body.steps = clamp(req.steps, 20, 50);
+    if (req.cfg_scale != null) body.cfg_scale = clamp(req.cfg_scale, 0, 9);
+  } else {
+    // dev (and any non-distilled FLUX variant): 5–100 steps, cfg ≤ 9.
+    if (req.steps != null) body.steps = clamp(req.steps, 5, 100);
+    if (req.cfg_scale != null) body.cfg_scale = clamp(req.cfg_scale, 0, 9);
   }
-  throw lastErr ?? new NimError(500, "No FLUX endpoint succeeded");
+  void isDev;
+
+  const url = `${aiBase}/genai/${req.model}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KEY}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new NimError(res.status, `${url} → ${text}`);
+  }
+  const json = (await res.json()) as NimImageResponse;
+  const b64 =
+    json.artifacts?.[0]?.base64 ||
+    json.image ||
+    json.data?.[0]?.b64_json ||
+    "";
+  if (!b64) {
+    throw new NimError(502, `No image in NIM response: ${JSON.stringify(json).slice(0, 240)}`);
+  }
+  // Sniff the mime from base64 magic bytes. JPEG starts with `/9j/`; PNG with `iVBOR`.
+  const mimeType: "image/jpeg" | "image/png" = b64.startsWith("/9j/") ? "image/jpeg" : "image/png";
+  return { base64: b64, mimeType, seed: json.artifacts?.[0]?.seed };
 }
 
-function openAiSize(aspect?: string): string {
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function aspectToWH(aspect?: string, isKontext = false): { width: number; height: number } {
+  // Kontext uses a different enum (672–1568 in 16-step increments). For simplicity we
+  // ignore aspect_ratio for Kontext and let NIM's `match_input_image` default kick in
+  // by sending a square. This matches what the docs show in their sample.
+  if (isKontext) return { width: 1024, height: 1024 };
   switch (aspect) {
-    case "16:9":
-      return "1344x768";
-    case "9:16":
-      return "768x1344";
-    case "3:2":
-      return "1216x832";
-    case "2:3":
-      return "832x1216";
-    case "4:3":
-      return "1152x896";
-    case "3:4":
-      return "896x1152";
-    default:
-      return "1024x1024";
+    case "16:9": return { width: 1344, height: 768 };
+    case "9:16": return { width: 768, height: 1344 };
+    case "3:2":  return { width: 1216, height: 832 };
+    case "2:3":  return { width: 832, height: 1216 };
+    case "4:3":  return { width: 1152, height: 896 };
+    case "3:4":  return { width: 896, height: 1152 };
+    case "1:1":
+    default:     return { width: 1024, height: 1024 };
   }
 }
 

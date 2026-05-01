@@ -83,7 +83,7 @@ export function ProfilePopover({ user, onSignOut }: Props) {
           {confirmingSignOut ? (
             <div className="mt-1 px-2 py-1.5 rounded-md bg-[rgb(var(--color-danger)/0.06)] border border-[rgb(var(--color-danger)/0.25)]">
               <div className="text-[11.5px] mb-1.5" style={{ color: "rgb(var(--color-fg-muted))" }}>
-                Sign out of Polyglot?
+                Sign out?
               </div>
               <div className="flex items-center justify-end gap-1.5">
                 <button

@@ -84,14 +84,21 @@ export function MessageView({
       <div className="prose-chat">
         {imageParts.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-2 not-prose">
-            {imageParts.map((p, i) => (
-              <ImageWithLightbox
-                key={i}
-                src={p.downloadUrl || p.storagePath || ""}
-                alt={p.fileName || "image"}
-                className="rounded-lg max-h-72 border cursor-zoom-in transition-opacity hover:opacity-95"
-              />
-            ))}
+            {imageParts.map((p, i) => {
+              const src = p.downloadUrl || p.storagePath || "";
+              if (src.startsWith("placeholder://")) {
+                const aspect = src.replace("placeholder://", "") || "1:1";
+                return <ImagePlaceholder key={i} aspect={aspect} caption={p.fileName} />;
+              }
+              return (
+                <ImageWithLightbox
+                  key={i}
+                  src={src}
+                  alt={p.fileName || "image"}
+                  className="rounded-lg max-h-72 border cursor-zoom-in transition-opacity hover:opacity-95"
+                />
+              );
+            })}
           </div>
         )}
         {fileParts.length > 0 && (
@@ -174,6 +181,43 @@ export function MessageView({
           onContinue={message.finishReason === "length" ? onContinue : undefined}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Aspect-correct shimmer rendered while a FLUX image is generating. Sized so the
+ * largest dimension matches the chat's max-h-72 cap (288px). Real image fades in
+ * once it lands.
+ */
+function ImagePlaceholder({ aspect, caption }: { aspect: string; caption?: string }) {
+  const ratios: Record<string, [number, number]> = {
+    "1:1": [1, 1],
+    "16:9": [16, 9],
+    "9:16": [9, 16],
+    "3:2": [3, 2],
+    "2:3": [2, 3],
+    "4:3": [4, 3],
+    "3:4": [3, 4],
+  };
+  const [w, h] = ratios[aspect] ?? [1, 1];
+  // Cap the long edge at 288px (matches max-h-72 on real images).
+  const max = 288;
+  const scale = max / Math.max(w, h);
+  const width = Math.round(w * scale);
+  const height = Math.round(h * scale);
+  return (
+    <div
+      className="rounded-lg border bg-[rgb(var(--color-bg-soft))] overflow-hidden relative"
+      style={{ width, height }}
+      aria-label={caption || "Generating image"}
+    >
+      <div className="absolute inset-0 shimmer" />
+      <div className="absolute inset-0 grid place-items-center text-[11px]" style={{ color: "rgb(var(--color-fg-subtle))" }}>
+        <div className="px-2 py-1 rounded bg-[rgb(var(--color-bg-elev))]/80 backdrop-blur-sm border">
+          {caption || "Generating…"}
+        </div>
+      </div>
     </div>
   );
 }

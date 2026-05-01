@@ -104,9 +104,9 @@ async function handleChat(req: NextRequest) {
     console.warn("[/api/chat] ensureUser failed:", (e as Error).message);
   }
 
-  // Resolve or create the chat. Firestore is best-effort — a Firestore outage shouldn't
-  // block the user from chatting. We fall back to an ephemeral chat id so streaming still
-  // works (audit: chat must continue even if persistence fails).
+  // Resolve the chat *id only* — DO NOT call createChat() yet. We defer that until
+  // the first delivered token so a failed/aborted request never pollutes the sidebar
+  // with an empty chat.
   let chatId = body.chatId && body.chatId !== "new" ? body.chatId : null;
   const wasExisting = !!chatId;
   if (chatId) {
@@ -118,11 +118,9 @@ async function handleChat(req: NextRequest) {
       }
     } catch (e) {
       console.warn("[/api/chat] getChat failed:", (e as Error).message);
-      // Treat as a fresh chat — we'll create a new id below.
       chatId = null;
     }
   }
-  // Resolve the user message text up front so we can use it for the initial chat title.
   const lastIncoming = body.messages[body.messages.length - 1];
   const userPromptText = lastIncoming.parts
     .map((p) => (p.type === "text" ? (p.text || "") : ""))
@@ -131,19 +129,11 @@ async function handleChat(req: NextRequest) {
   const initialTitle = userPromptText
     ? userPromptText.replace(/\s+/g, " ").slice(0, 60)
     : "New chat";
-  if (!chatId) {
-    try {
-      // Persist the chat row with the user prompt as the title — the sidebar shows
-      // something readable immediately instead of a generic "New chat" placeholder.
-      // The LLM-generated title (3–6 words) overwrites this in the background.
-      chatId = await createChat(user.uid, model.id, initialTitle);
-    } catch (e) {
-      console.warn("[/api/chat] createChat failed, using ephemeral id:", (e as Error).message);
-      chatId = nanoid(12);
-    }
-  }
-  // Audit P2-2: avoid the redundant getChat round-trip — a brand-new chat is by definition the first turn.
+  // For brand-new chats we mint a *provisional* id now so we can echo it to the
+  // client in the meta event, but the Firestore row is created lazily on first token.
+  if (!chatId) chatId = nanoid(12);
   const isFirstTurn = !wasExisting;
+  let chatPersisted = wasExisting;
 
   // Translate UI messages → NIM messages.
   const last = body.messages[body.messages.length - 1];
@@ -205,7 +195,8 @@ async function handleChat(req: NextRequest) {
     body.thinkingMode as ThinkingMode | undefined
   );
 
-  // Persist the user message right away so refresh-during-stream is recoverable.
+  // We defer persistence of the user message to first-token too. Hold the parts
+  // here for that moment.
   const userParts: MessagePart[] = last.parts.map((p): MessagePart => {
     if (p.type === "text") return { type: "text", text: p.text };
     if (p.type === "image") return { type: "image", storagePath: p.storagePath, downloadUrl: p.downloadUrl, mimeType: p.mimeType, fileName: p.fileName };
@@ -213,34 +204,50 @@ async function handleChat(req: NextRequest) {
     if (p.type === "video") return { type: "file", storagePath: p.storagePath, downloadUrl: p.downloadUrl, fileName: p.fileName, mimeType: "video/mp4" };
     return { type: "text", text: "" };
   });
-  try {
-    await persistUserMessage({
-      chatId,
-      uid: user.uid,
-      message: {
-        id: lastUserMessageId,
-        role: "user",
-        parts: userParts,
-        createdAt: Date.now(),
-      },
-    });
-  } catch (e) {
-    console.warn("[/api/chat] persistUserMessage failed:", (e as Error).message);
+
+  /**
+   * Create the chat row and persist the user message — exactly once, on first
+   * delivered token. Returns true if the row exists after the call (already-existed
+   * counts).
+   */
+  async function ensureChatPersisted(): Promise<boolean> {
+    if (chatPersisted) return true;
+    try {
+      const newId = await createChat(user.uid, model!.id, initialTitle);
+      chatId = newId;
+      await persistUserMessage({
+        chatId: newId,
+        uid: user.uid,
+        message: { id: lastUserMessageId, role: "user", parts: userParts, createdAt: Date.now() },
+      });
+      chatPersisted = true;
+      return true;
+    } catch (e) {
+      console.warn("[/api/chat] deferred persist failed:", (e as Error).message);
+      return false;
+    }
   }
 
-  // Build the SSE stream from NIM and translate to our protocol.
+  // Abort controller propagated to the upstream NIM fetch. When the client
+  // disconnects (Stop button, navigate away, switch chat) req.signal aborts and
+  // we tear down the upstream so we don't keep generating tokens for free-tier
+  // RPM that nobody will see.
+  const upstreamAc = new AbortController();
+  if (req.signal) {
+    if (req.signal.aborted) upstreamAc.abort();
+    else req.signal.addEventListener("abort", () => upstreamAc.abort(), { once: true });
+  }
+
   const encoder = encodeEvent;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      // Task 6/66: track closure so any late callback (e.g. fire-and-forget title gen)
-      // doesn't enqueue into a closed controller and crash the request.
       let closed = false;
       const send = (e: StreamEvent) => {
         if (closed) return;
         try {
           controller.enqueue(encoder(e));
         } catch {
-          // Controller may have been torn down by a client disconnect — swallow.
+          // Controller torn down by client disconnect — swallow.
         }
       };
       const startTime = Date.now();
@@ -284,7 +291,7 @@ async function handleChat(req: NextRequest) {
 
         let upstream: Response;
         try {
-          upstream = await nimChatCompletionsStream({ ...nimReq, model: modelId });
+          upstream = await nimChatCompletionsStream({ ...nimReq, model: modelId }, upstreamAc.signal);
         } catch (e) {
           clearTimeout(slowTimer);
           if (e instanceof NimError) {
@@ -315,13 +322,16 @@ async function handleChat(req: NextRequest) {
         }
 
         const events = mergeStream(parseNimSSE(upstream.body!));
-        // When the user disabled thinking, drop reasoning deltas at the boundary so even
-        // misbehaving NIM endpoints can't leak a chain-of-thought into the UI.
         const stripReasoning = (body.thinkingMode ?? null) === "off";
         for await (const ev of events) {
           if (!firstByteSeen) {
             firstByteSeen = true;
             clearTimeout(slowTimer);
+            // First real token reached the server. Create the chat row + persist
+            // the user message NOW (deferred from request start). If this fails
+            // we still continue streaming — the assistant message persist at the
+            // end will retry the create.
+            void ensureChatPersisted();
             send({ type: "status", status: "streaming", modelId, elapsedMs: Date.now() - reqStart });
           }
           if (ev.type === "reasoning" && ev.text) {
@@ -385,18 +395,26 @@ async function handleChat(req: NextRequest) {
       }
 
       let streamErrored = false;
+      let aborted = false;
       try {
         await runStream(model.id);
       } catch (e) {
-        streamErrored = true;
-        finishReason = "error";
         const msg = e instanceof Error ? e.message : String(e);
-        // Make sure the user sees a recoverable assistant turn rather than a missing reply
-        // (audit P0-2: persist a tombstone so the chat isn't left in a half-state).
-        if (!assistantText) {
-          const fallback = `_⚠️ The model couldn't complete this response: ${msg.slice(0, 200)}._`;
-          assistantText = fallback;
-          send({ type: "text-delta", text: fallback });
+        const isAbort = upstreamAc.signal.aborted || /aborted|abort/i.test(msg);
+        if (isAbort) {
+          aborted = true;
+          finishReason = "stop";
+        } else {
+          streamErrored = true;
+          finishReason = "error";
+          // Only show the warn-tombstone if we actually have a chat row (existing
+          // chat) — avoids a phantom error message for users who never produced
+          // any chat in the first place.
+          if (!assistantText && chatPersisted) {
+            const fallback = `_⚠️ The model couldn't complete this response: ${msg.slice(0, 200)}._`;
+            assistantText = fallback;
+            send({ type: "text-delta", text: fallback });
+          }
         }
       }
 
@@ -415,13 +433,10 @@ async function handleChat(req: NextRequest) {
       send({ type: "finish", finishReason, thinkingDurationMs: thinkingDuration });
       void streamErrored;
 
-      // Background title generation. The chat row already has the user prompt as a
-      // readable initial title (set during createChat above) — this call replaces it
-      // with a 3–6 word LLM-generated title. Fire-and-forget so the stream closes
-      // immediately. The Firestore listener on the client picks up the new title via
-      // the live `useChats` subscription, and we also send a title event for the
-      // header to update without a refresh.
-      if (isFirstTurn && userPromptText) {
+      // Background title generation. Only run if the chat row was actually created
+      // (i.e. we got past first token). For aborted/failed-pre-first-token requests
+      // there's nothing to title.
+      if (isFirstTurn && userPromptText && chatPersisted) {
         void generateTitle(last, assistantText)
           .then(async (t) => {
             if (!t || t === initialTitle) return;
@@ -436,49 +451,55 @@ async function handleChat(req: NextRequest) {
           .catch(() => undefined);
       }
 
-      // Persist assistant message + artifacts.
-      const assistantParts: MessagePart[] = [];
-      if (reasoningText) {
-        assistantParts.push({ type: "reasoning", reasoningText, durationMs: thinkingDuration });
+      // Persist assistant message + artifacts — only if something was actually
+      // produced AND a chat row exists (or can be created). Aborting before
+      // first token leaves zero residue in Firestore.
+      const hasContent = !!(assistantText || reasoningText || artifactBuffers.size > 0);
+      if (hasContent) {
+        if (!chatPersisted) await ensureChatPersisted();
       }
-      assistantParts.push({ type: "text", text: assistantText });
-      for (const id of artifactBuffers.keys()) {
-        assistantParts.push({ type: "artifact-ref", artifactId: id });
-      }
+      if (hasContent && chatPersisted) {
+        const assistantParts: MessagePart[] = [];
+        if (reasoningText) {
+          assistantParts.push({ type: "reasoning", reasoningText, durationMs: thinkingDuration });
+        }
+        assistantParts.push({ type: "text", text: assistantText });
+        for (const id of artifactBuffers.keys()) {
+          assistantParts.push({ type: "artifact-ref", artifactId: id });
+        }
 
-      const assistantMessage: ChatMessage = {
-        id: assistantMessageId,
-        role: "assistant",
-        parts: assistantParts,
-        model: model.id,
-        thinkingMode: body.thinkingMode ?? null,
-        usage,
-        finishReason,
-        createdAt: Date.now() + 1, // ensure it sorts after user msg even on millisecond ties
-      };
+        const assistantMessage: ChatMessage = {
+          id: assistantMessageId,
+          role: "assistant",
+          parts: assistantParts,
+          model: model.id,
+          thinkingMode: body.thinkingMode ?? null,
+          usage,
+          finishReason,
+          createdAt: Date.now() + 1,
+        };
 
-      try {
-        await persistAssistantMessage({
-          chatId: chatId!,
-          uid: user.uid,
-          message: assistantMessage,
-          artifacts: Array.from(artifactBuffers.entries()).map(([id, a]) => ({
-            id,
-            type: a.type,
-            title: a.title,
-            language: a.language,
-            body: a.body,
-          })),
-          modelId: model.id,
-          isFirstTurn,
-          // Task 6/66: title is now applied asynchronously by the fire-and-forget
-          // generateTitle() block above. Leave undefined here so the chat row keeps
-          // the placeholder title until the async update lands.
-          newTitle: undefined,
-        });
-      } catch (e) {
-        send({ type: "error", message: `Failed to save: ${e instanceof Error ? e.message : String(e)}` });
+        try {
+          await persistAssistantMessage({
+            chatId: chatId!,
+            uid: user.uid,
+            message: assistantMessage,
+            artifacts: Array.from(artifactBuffers.entries()).map(([id, a]) => ({
+              id,
+              type: a.type,
+              title: a.title,
+              language: a.language,
+              body: a.body,
+            })),
+            modelId: model.id,
+            isFirstTurn,
+            newTitle: undefined,
+          });
+        } catch (e) {
+          send({ type: "error", message: `Failed to save: ${e instanceof Error ? e.message : String(e)}` });
+        }
       }
+      void aborted;
 
       // Suppress unused-var warning for unused timing
       void startTime;
